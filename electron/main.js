@@ -10,6 +10,7 @@ let historyDbPath = null;
 let historyInitError = null;
 let retentionTimer = null;
 let cachedRetentionPolicy = null;
+let transcriptionOutputStyle = 'plain';
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 
@@ -233,6 +234,9 @@ app.whenReady().then(() => {
     if (cachedRetentionPolicy.schedule.type === 'interval') {
       updateRetentionSchedule(cachedRetentionPolicy);
     }
+    if (typeof historyStorage.getTranscriptionOutputStyle === 'function') {
+      transcriptionOutputStyle = historyStorage.getTranscriptionOutputStyle();
+    }
     runRetentionPrune('startup');
   } catch (err) {
     historyInitError = err;
@@ -311,9 +315,12 @@ ipcMain.on('transcribe:start', (event, payload) => {
   if (payload.initialPrompt && payload.initialPrompt.trim()) {
     args.push('--initial_prompt', payload.initialPrompt);
   }
-  if (payload.withTimestamps) {
-    args.push('--with_timestamps');
+  const allowedOutputStyles = new Set(['timestamps', 'plain']);
+  let outputStyle = typeof payload.outputStyle === 'string' ? payload.outputStyle : transcriptionOutputStyle;
+  if (!allowedOutputStyles.has(outputStyle)) {
+    outputStyle = 'plain';
   }
+  args.push('--output_style', outputStyle);
   if (payload.replace && payload.replace.trim()) {
     args.push('--replace', payload.replace);
   }
@@ -532,6 +539,26 @@ ipcMain.handle('settings:retention:set', async (_event, nextPolicy) => {
     return { ok: true, policy: cachedRetentionPolicy };
   } catch (err) {
     console.error('settings:retention:set failed', err);
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+});
+
+ipcMain.handle('settings:transcription:get', async () => {
+  try {
+    transcriptionOutputStyle = historyStorage.getTranscriptionOutputStyle();
+    return { ok: true, outputStyle: transcriptionOutputStyle };
+  } catch (err) {
+    console.error('settings:transcription:get failed', err);
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+});
+
+ipcMain.handle('settings:transcription:set', async (_event, next) => {
+  try {
+    transcriptionOutputStyle = historyStorage.setTranscriptionOutputStyle(next);
+    return { ok: true, outputStyle: transcriptionOutputStyle };
+  } catch (err) {
+    console.error('settings:transcription:set failed', err);
     return { ok: false, error: err?.message ?? String(err) };
   }
 });

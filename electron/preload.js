@@ -27,4 +27,6 @@ contextBridge.exposeInMainWorld('revoice', {
   onHistoryPruned: register('history:pruned'),
   getRetentionPolicy: () => ipcRenderer.invoke('settings:retention:get'),
   setRetentionPolicy: (policy) => ipcRenderer.invoke('settings:retention:set', policy),
+  getTranscriptionDefaults: () => ipcRenderer.invoke('settings:transcription:get'),
+  setTranscriptionDefaults: (payload) => ipcRenderer.invoke('settings:transcription:set', payload),
 });

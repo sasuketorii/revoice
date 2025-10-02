@@ -6,7 +6,7 @@ export type TranscriptionPayload = {
   beamSize: number;
   computeType: string;
   initialPrompt?: string;
-  withTimestamps?: boolean;
+  outputStyle: 'timestamps' | 'plain';
   formats?: string;
   replace?: string;
   noVad?: boolean;
@@ -27,6 +27,7 @@ export type HistoryRecord = {
   inputPath: string | null;
   outputPath: string | null;
   transcriptPreview: string | null;
+  transcriptFull?: string | null;
   model: string | null;
   language: string | null;
   createdAt: string;
@@ -83,6 +84,10 @@ export type RevoiceBridge = {
   setRetentionPolicy: (
     policy: RetentionPolicy
   ) => Promise<{ ok: boolean; policy?: RetentionPolicy; error?: string }>;
+  getTranscriptionDefaults: () => Promise<{ ok: boolean; outputStyle?: 'timestamps' | 'plain'; error?: string }>;
+  setTranscriptionDefaults: (
+    payload: { outputStyle: 'timestamps' | 'plain' }
+  ) => Promise<{ ok: boolean; outputStyle?: 'timestamps' | 'plain'; error?: string }>;
 };
 
 declare global {

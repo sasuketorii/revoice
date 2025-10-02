@@ -13,8 +13,8 @@
    - `[SYSTEM] History pruning removed X rows` ログを出力。
 
 2. **文字起こしフォーマット切り替え (Section 3)**
-   - `revoice/postprocess.py` を新規作成し、タイムスタンプ無し整形と Markdown β を実装。
-   - Python CLI に `--output_style` フラグを追加し、Electron から選択できるよう UI を 3択セグメントボタン化。
+   - `revoice/postprocess.py` を新規作成し、タイムスタンプ無し整形を実装。
+   - Python CLI に `--output_style` フラグを追加し、Electron から選択できるよう UI を 2択セグメントボタン化。
    - 選択内容を SQLite `settings` に保存し、新規タブでも既定値を利用できるよう反映。
 
 3. **モデルプロファイル (Section 4)**

@@ -35,6 +35,10 @@ type HistoryEntry = {
 const HISTORY_PAGE_SIZE = 20;
 const PROGRESS_REGEX = /^\[PROGRESS\]\s+(\d+(?:\.\d+)?)$/;
 const PREVIEW_MAX_LENGTH = 400;
+const OUTPUT_STYLE_LABELS: Record<'timestamps' | 'plain', string> = {
+  timestamps: 'タイムスタンプあり',
+  plain: 'タイムスタンプなし',
+};
 
 const BASE_PAYLOAD: Omit<TranscriptionPayload, 'inputPath'> = {
   outputDir: 'archive',
@@ -43,7 +47,7 @@ const BASE_PAYLOAD: Omit<TranscriptionPayload, 'inputPath'> = {
   beamSize: 5,
   computeType: 'int8',
   formats: 'txt',
-  withTimestamps: true,
+  outputStyle: 'plain',
   minSegment: 0.6,
   preset: 'balanced',
   memo: false,
@@ -87,7 +91,7 @@ const historyRecordToEntry = (record: HistoryRecord): HistoryEntry => ({
   label: buildHistoryLabel(record),
   finishedAt: record.createdAt,
   outputPath: record.outputPath ?? null,
-  transcript: '',
+  transcript: record.transcriptFull?.trim() ?? '',
   transcriptPreview: record.transcriptPreview ? createPreview(record.transcriptPreview) : '',
   inputPath: record.inputPath ?? '',
   model: record.model ?? null,
@@ -240,6 +244,8 @@ const App = () => {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [activePage, setActivePage] = useState<ActivePage>('vtt-transcribe');
   const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null);
+  const [outputStyle, setOutputStyle] = useState<'timestamps' | 'plain'>('plain');
+  const [outputStyleLoading, setOutputStyleLoading] = useState(true);
   const [retentionPolicy, setRetentionPolicy] = useState<RetentionPolicy | null>(null);
   const [policyForm, setPolicyForm] = useState<RetentionFormState>(() => toFormState(RECOMMENDED_POLICY));
   const [policyLoading, setPolicyLoading] = useState(true);
@@ -458,26 +464,31 @@ const App = () => {
 
   const loadHistoryContent = useCallback(
     async (entry: HistoryEntry) => {
-      if (entry.transcript && entry.transcript.trim()) {
-        return entry.transcript;
-      }
-      if (entry.outputPath && window.revoice.readTextFile) {
+      if (window.revoice?.getHistoryDetail) {
         try {
-          const content = (await window.revoice.readTextFile(entry.outputPath)).trim();
-          if (content) {
+          const response = await window.revoice.getHistoryDetail(entry.id);
+          if (response?.ok && response.item) {
+            const transcript = response.item.transcriptFull?.trim() ?? '';
             setHistory((prev) =>
               prev.map((item) =>
                 item.id === entry.id
-                  ? { ...item, transcript: content, transcriptPreview: createPreview(content) }
+                  ? {
+                      ...item,
+                      transcript,
+                      transcriptPreview: transcript ? createPreview(transcript) : item.transcriptPreview,
+                    }
                   : item
               )
             );
+            if (transcript) return transcript;
           }
-          return content;
         } catch (err) {
-          appendLog(`[WARN] 履歴ファイルの読み込みに失敗しました: ${err}`, 'error');
-          return '';
+          appendLog(`[WARN] 履歴の取得に失敗しました: ${err}`, 'error');
         }
+      }
+
+      if (entry.transcript && entry.transcript.trim()) {
+        return entry.transcript;
       }
       return '';
     },
@@ -647,6 +658,46 @@ const App = () => {
   }, [fetchHistory]);
 
   useEffect(() => {
+    let cancelled = false;
+
+    const loadTranscriptionDefaults = async () => {
+      if (!window.revoice?.getTranscriptionDefaults) {
+        if (!cancelled) {
+          setOutputStyle('plain');
+          setOutputStyleLoading(false);
+        }
+        return;
+      }
+      setOutputStyleLoading(true);
+      try {
+        const response = await window.revoice.getTranscriptionDefaults();
+        if (cancelled) return;
+        if (response?.ok && response.outputStyle) {
+          setOutputStyle(response.outputStyle);
+        } else if (response?.error) {
+          appendLog(`[WARN] 出力スタイルの取得に失敗しました: ${response.error}`, 'error');
+          setOutputStyle('plain');
+        }
+      } catch (err) {
+        if (!cancelled) {
+          appendLog(`[WARN] 出力スタイルの取得中にエラーが発生しました: ${err}`, 'error');
+          setOutputStyle('plain');
+        }
+      } finally {
+        if (!cancelled) {
+          setOutputStyleLoading(false);
+        }
+      }
+    };
+
+    void loadTranscriptionDefaults();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [appendLog]);
+
+  useEffect(() => {
     if (activePage === 'vtt-history' && history.length > 0) {
       if (selectedHistoryId === null || !history.some((item) => item.id === selectedHistoryId)) {
         setSelectedHistoryId(history[0].id);
@@ -808,10 +859,12 @@ const App = () => {
     appendLog(`入力ファイル: ${fileName}`, 'info');
     appendLog(`出力先 (予定): ${BASE_PAYLOAD.outputDir}/${fileName.replace(/\.[^.]+$/, '')}.txt`, 'info');
     appendLog('Revoice CLI を起動します…', 'info');
+    appendLog(`出力スタイル: ${OUTPUT_STYLE_LABELS[outputStyle] ?? outputStyle}`, 'info');
 
     const payload: TranscriptionPayload = {
       ...BASE_PAYLOAD,
       inputPath,
+      outputStyle,
     };
 
     window.revoice.startTranscription(payload);
@@ -873,6 +926,22 @@ const App = () => {
     const body = logs.map((entry) => `[${entry.timestamp}] ${entry.message}`).join('\n');
     copyText(body, 'ログをクリップボードにコピーしました。', 'コピーできるログがまだありません');
   };
+
+  const handleOutputStyleChange = useCallback(
+    async (style: 'timestamps' | 'plain') => {
+      setOutputStyle(style);
+      if (!window.revoice?.setTranscriptionDefaults) return;
+      try {
+        const response = await window.revoice.setTranscriptionDefaults({ outputStyle: style });
+        if (!response?.ok && response?.error) {
+          appendLog(`[WARN] 出力スタイルの保存に失敗しました: ${response.error}`, 'error');
+        }
+      } catch (err) {
+        appendLog(`[WARN] 出力スタイルの保存中にエラーが発生しました: ${err}`, 'error');
+      }
+    },
+    [appendLog]
+  );
 
   const handleCopyHistoryTranscript = async (entry: HistoryEntry) => {
     const content = await loadHistoryContent(entry);
@@ -1093,6 +1162,24 @@ const App = () => {
         <button type="button" className="transcribe-tabs__button transcribe-tabs__button--add">
           ＋
         </button>
+      </div>
+
+      <div className="output-style">
+        <span className="output-style__label">出力スタイル</span>
+        <div className="output-style__controls">
+          {(['timestamps', 'plain'] as const).map((style) => (
+            <button
+              key={style}
+              type="button"
+              className={`output-style__button ${outputStyle === style ? 'output-style__button--active' : ''}`}
+              onClick={() => handleOutputStyleChange(style)}
+              disabled={outputStyleLoading}
+            >
+              {OUTPUT_STYLE_LABELS[style]}
+            </button>
+          ))}
+          {outputStyleLoading && <span className="output-style__hint">読み込み中…</span>}
+        </div>
       </div>
 
       <section className="panel panel--upload">

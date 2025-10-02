@@ -20,6 +20,8 @@ try:
 except Exception:
     imageio_ffmpeg = None
 
+from .postprocess import format_transcript
+
 
 def emit_progress(percent: float) -> None:
     value = max(0.0, min(percent, 100.0))
@@ -138,7 +140,14 @@ def main(argv=None):
     p.add_argument("--beam_size", type=int, default=5)
     p.add_argument("--compute_type", type=str, default="int8", choices=["auto","int8","int8_float16","float16","float32"])
     p.add_argument("--initial_prompt", type=str, default="", help="Initial prompt to bias transcription")
-    p.add_argument("--with_timestamps", action="store_true", help="Include timestamps in TXT output")
+    p.add_argument("--with_timestamps", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument(
+        "--output_style",
+        type=str,
+        choices=["timestamps", "plain"],
+        default="plain",
+        help="TXT出力のスタイル (timestamps/plain)",
+    )
     p.add_argument("--formats", type=str, default="txt,srt,vtt", help="Comma separated: txt,srt,vtt")
     p.add_argument("--replace", type=str, default="", help="Comma-separated replacements like A=>B,C=>D")
     p.add_argument("--no_vad", action="store_true", help="Disable VAD filtering")
@@ -212,10 +221,23 @@ def main(argv=None):
 
     formats = [x.strip() for x in args.formats.split(",") if x.strip()]
     base = out_dir / input_path.stem
+
+    output_style = args.output_style
+    if args.with_timestamps:
+        output_style = "timestamps"
+
+    allowed_styles = {"timestamps", "plain"}
+    if output_style not in allowed_styles:
+        output_style = "plain"
+
     transcript_path = None
     if "txt" in formats:
         txt_path = base.with_suffix(".txt")
-        write_txt(segments, txt_path, with_timestamps=args.with_timestamps)
+        if output_style == "timestamps":
+            write_txt(segments, txt_path, with_timestamps=True)
+        else:
+            processed = format_transcript(segments, style=output_style)
+            txt_path.write_text(processed + ("\n" if processed and not processed.endswith("\n") else ""), encoding="utf-8")
         transcript_path = txt_path
     if "srt" in formats:
         write_srt(segments, base.with_suffix(".srt"))

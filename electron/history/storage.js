@@ -105,7 +105,8 @@ const applyMigrations = (db) => {
           created_at TEXT NOT NULL,
           duration REAL,
           status TEXT,
-          notes TEXT
+          notes TEXT,
+          transcript_full TEXT
         );
       `);
       db.exec('CREATE INDEX IF NOT EXISTS idx_transcriptions_created_at ON transcriptions(created_at);');
@@ -122,6 +123,18 @@ const applyMigrations = (db) => {
       db.pragma('user_version = 1');
     });
     migrateToV1();
+  }
+
+  if (userVersion < 2) {
+    const migrateToV2 = db.transaction(() => {
+      db.exec('ALTER TABLE transcriptions ADD COLUMN transcript_full TEXT;');
+      db.pragma('user_version = 2');
+    });
+    try {
+      migrateToV2();
+    } catch (err) {
+      console.error('Failed to migrate history storage to v2', err);
+    }
   }
 };
 
@@ -147,6 +160,7 @@ const recordFromRow = (row) => {
     duration: typeof row.duration === 'number' ? row.duration : row.duration === null ? null : Number(row.duration),
     status: row.status ?? null,
     notes: row.notes ?? null,
+    transcriptFull: row.transcriptFull ?? null,
   };
 };
 
@@ -195,6 +209,22 @@ const setRetentionPolicy = (policy) => {
   return normalized;
 };
 
+const OUTPUT_STYLE_OPTIONS = new Set(['timestamps', 'plain']);
+
+const getTranscriptionOutputStyle = () => {
+  const raw = getSetting('transcriptionOutputStyle');
+  if (typeof raw === 'string' && OUTPUT_STYLE_OPTIONS.has(raw)) {
+    return raw;
+  }
+  return 'plain';
+};
+
+const setTranscriptionOutputStyle = (style) => {
+  const next = typeof style === 'string' && OUTPUT_STYLE_OPTIONS.has(style) ? style : 'plain';
+  setSetting('transcriptionOutputStyle', next);
+  return next;
+};
+
 const storeTranscription = (entry) => {
   const db = ensureInitialized();
   const now = entry.createdAt || new Date().toISOString();
@@ -208,8 +238,9 @@ const storeTranscription = (entry) => {
       created_at,
       duration,
       status,
-      notes
-    ) VALUES (@inputPath, @outputPath, @transcriptPreview, @model, @language, @createdAt, @duration, @status, @notes)
+      notes,
+      transcript_full
+    ) VALUES (@inputPath, @outputPath, @transcriptPreview, @model, @language, @createdAt, @duration, @status, @notes, @transcriptFull)
   `);
 
   const transcriptPreview = entry.transcriptPreview ?? generatePreview(entry.transcript ?? entry.transcriptPreview ?? '');
@@ -224,6 +255,7 @@ const storeTranscription = (entry) => {
     duration: typeof entry.duration === 'number' ? entry.duration : null,
     status: entry.status ?? 'completed',
     notes: entry.notes ?? null,
+    transcriptFull: entry.transcript ?? null,
   });
 
   return {
@@ -237,6 +269,7 @@ const storeTranscription = (entry) => {
     duration: typeof entry.duration === 'number' ? entry.duration : null,
     status: entry.status ?? 'completed',
     notes: entry.notes ?? null,
+    transcriptFull: entry.transcript ?? null,
   };
 };
 
@@ -253,7 +286,8 @@ const listTranscriptions = ({ limit = 20, offset = 0 } = {}) => {
       created_at AS createdAt,
       duration,
       status,
-      notes
+      notes,
+      transcript_full AS transcriptFull
     FROM transcriptions
     ORDER BY datetime(created_at) DESC, id DESC
     LIMIT @limit OFFSET @offset
@@ -280,7 +314,8 @@ const getTranscription = (id) => {
       created_at AS createdAt,
       duration,
       status,
-      notes
+      notes,
+      transcript_full AS transcriptFull
     FROM transcriptions
     WHERE id = @id
   `);
@@ -350,4 +385,6 @@ module.exports = {
   getRetentionPolicy,
   setRetentionPolicy,
   DEFAULT_RETENTION_POLICY,
+  getTranscriptionOutputStyle,
+  setTranscriptionOutputStyle,
 };
