@@ -24,4 +24,7 @@ contextBridge.exposeInMainWorld('revoice', {
   onHistoryAdded: register('history:item-added'),
   onHistoryCleared: register('history:cleared'),
   onHistoryDeleted: register('history:deleted'),
+  onHistoryPruned: register('history:pruned'),
+  getRetentionPolicy: () => ipcRenderer.invoke('settings:retention:get'),
+  setRetentionPolicy: (policy) => ipcRenderer.invoke('settings:retention:set', policy),
 });

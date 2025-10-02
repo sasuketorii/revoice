@@ -35,6 +35,19 @@ export type HistoryRecord = {
   notes: string | null;
 };
 
+export type RetentionPolicySchedule = {
+  type: 'interval' | 'startup';
+  preset: '12h' | '24h' | 'startup' | null;
+  intervalHours: number | null;
+};
+
+export type RetentionPolicy = {
+  mode: 'recommended' | 'custom';
+  maxDays: number | null;
+  maxEntries: number | null;
+  schedule: RetentionPolicySchedule;
+};
+
 type ListenerDisposer = () => void;
 
 export type RevoiceBridge = {
@@ -56,6 +69,20 @@ export type RevoiceBridge = {
   onHistoryAdded: (cb: (record: HistoryRecord) => void) => ListenerDisposer | void;
   onHistoryCleared: (cb: (payload: { removed: number }) => void) => ListenerDisposer | void;
   onHistoryDeleted: (cb: (payload: { removed: number; ids: number[]; total: number }) => void) => ListenerDisposer | void;
+  onHistoryPruned: (
+    cb: (payload: {
+      removed: number;
+      removedByAge: number;
+      removedByCount: number;
+      total: number;
+      reason: string;
+      policy: RetentionPolicy;
+    }) => void
+  ) => ListenerDisposer | void;
+  getRetentionPolicy: () => Promise<{ ok: boolean; policy?: RetentionPolicy; error?: string }>;
+  setRetentionPolicy: (
+    policy: RetentionPolicy
+  ) => Promise<{ ok: boolean; policy?: RetentionPolicy; error?: string }>;
 };
 
 declare global {

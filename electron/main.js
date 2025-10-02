@@ -8,6 +8,10 @@ const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 let mainWindow;
 let historyDbPath = null;
 let historyInitError = null;
+let retentionTimer = null;
+let cachedRetentionPolicy = null;
+
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
 
 function isDev() {
   return !app.isPackaged;
@@ -111,6 +115,92 @@ function emitSystemLog(win, message) {
   win.webContents.send('transcribe:log', `[SYSTEM] ${message}`);
 }
 
+function broadcastSystemLog(message) {
+  BrowserWindow.getAllWindows().forEach((win) => emitSystemLog(win, message));
+}
+
+function computeThresholdISO(days) {
+  if (!Number.isFinite(days) || days <= 0) return null;
+  const ms = days * DAY_IN_MS;
+  return new Date(Date.now() - ms).toISOString();
+}
+
+function summarizePolicy(policy) {
+  return {
+    mode: policy.mode,
+    maxDays: policy.maxDays ?? null,
+    maxEntries: policy.maxEntries ?? null,
+    schedule: {
+      type: policy?.schedule?.type ?? 'interval',
+      preset: policy?.schedule?.preset ?? null,
+      intervalHours: policy?.schedule?.intervalHours ?? null,
+    },
+  };
+}
+
+function runRetentionPrune(reason = 'scheduled') {
+  try {
+    const policy = historyStorage.getRetentionPolicy();
+    cachedRetentionPolicy = summarizePolicy(policy);
+
+    let removedByAge = 0;
+    let removedByCount = 0;
+
+    if (policy.maxDays && Number.isFinite(policy.maxDays)) {
+      const thresholdISO = computeThresholdISO(policy.maxDays);
+      if (thresholdISO) {
+        const result = historyStorage.pruneBeforeISO(thresholdISO);
+        removedByAge = Number(result?.changes ?? 0);
+      }
+    }
+
+    if (policy.maxEntries && Number.isFinite(policy.maxEntries)) {
+      const result = historyStorage.pruneExceedingCount(policy.maxEntries);
+      removedByCount = Number(result?.changes ?? 0);
+    }
+
+    const totalRemoved = removedByAge + removedByCount;
+    const total = historyStorage.countTranscriptions();
+
+    broadcastSystemLog(
+      `History pruning removed ${totalRemoved} rows (age=${removedByAge}, overflow=${removedByCount}, reason=${reason})`
+    );
+
+    BrowserWindow.getAllWindows().forEach((win) => {
+      win.webContents.send('history:pruned', {
+        removed: totalRemoved,
+        removedByAge,
+        removedByCount,
+        total,
+        reason,
+        policy: cachedRetentionPolicy,
+      });
+    });
+  } catch (err) {
+    console.error('Retention prune failed', err);
+    broadcastSystemLog(`History pruning failed: ${err?.message ?? err}`);
+  }
+}
+
+function updateRetentionSchedule(policy) {
+  if (retentionTimer) {
+    clearInterval(retentionTimer);
+    retentionTimer = null;
+  }
+  if (!policy || policy?.schedule?.type !== 'interval') {
+    return;
+  }
+  const intervalHours = Number(policy.schedule.intervalHours);
+  if (!Number.isFinite(intervalHours) || intervalHours <= 0) {
+    return;
+  }
+  const intervalMs = intervalHours * 60 * 60 * 1000;
+  retentionTimer = setInterval(() => runRetentionPrune('interval'), intervalMs);
+  if (typeof retentionTimer.unref === 'function') {
+    retentionTimer.unref();
+  }
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1100,
@@ -139,6 +229,11 @@ app.whenReady().then(() => {
   try {
     const { path: dbPath } = historyStorage.initialize(app);
     historyDbPath = dbPath;
+    cachedRetentionPolicy = summarizePolicy(historyStorage.getRetentionPolicy());
+    if (cachedRetentionPolicy.schedule.type === 'interval') {
+      updateRetentionSchedule(cachedRetentionPolicy);
+    }
+    runRetentionPrune('startup');
   } catch (err) {
     historyInitError = err;
     console.error('Failed to initialize history storage', err);
@@ -414,6 +509,30 @@ ipcMain.handle('history:delete', async (_event, ids) => {
   } catch (err) {
     console.error('history:delete failed', err);
     return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('settings:retention:get', async () => {
+  try {
+    const policy = historyStorage.getRetentionPolicy();
+    cachedRetentionPolicy = summarizePolicy(policy);
+    return { ok: true, policy: cachedRetentionPolicy };
+  } catch (err) {
+    console.error('settings:retention:get failed', err);
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+});
+
+ipcMain.handle('settings:retention:set', async (_event, nextPolicy) => {
+  try {
+    const stored = historyStorage.setRetentionPolicy(nextPolicy);
+    cachedRetentionPolicy = summarizePolicy(stored);
+    updateRetentionSchedule(cachedRetentionPolicy);
+    runRetentionPrune('policy-update');
+    return { ok: true, policy: cachedRetentionPolicy };
+  } catch (err) {
+    console.error('settings:retention:set failed', err);
+    return { ok: false, error: err?.message ?? String(err) };
   }
 });
 

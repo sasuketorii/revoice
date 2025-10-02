@@ -14,6 +14,71 @@ const ensureInitialized = () => {
   return dbInstance;
 };
 
+const nowISO = () => new Date().toISOString();
+
+const DEFAULT_RETENTION_POLICY = Object.freeze({
+  mode: 'recommended', // 'recommended' | 'custom'
+  maxDays: 90,
+  maxEntries: 200,
+  schedule: {
+    type: 'interval', // 'interval' | 'startup'
+    preset: '12h',
+    intervalHours: 12,
+  },
+});
+
+const normalizePositiveInteger = (value) => {
+  if (value === null || value === undefined) return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  return Math.floor(numeric);
+};
+
+const normalizeRetentionPolicy = (raw) => {
+  if (!raw || typeof raw !== 'object') return { ...DEFAULT_RETENTION_POLICY };
+  const mode = raw.mode === 'custom' ? 'custom' : 'recommended';
+  const maxDays = mode === 'recommended' ? DEFAULT_RETENTION_POLICY.maxDays : normalizePositiveInteger(raw.maxDays) ?? null;
+  const maxEntries = mode === 'recommended' ? DEFAULT_RETENTION_POLICY.maxEntries : normalizePositiveInteger(raw.maxEntries) ?? null;
+
+  const scheduleRaw = raw.schedule && typeof raw.schedule === 'object' ? raw.schedule : {};
+  let scheduleType = scheduleRaw.type === 'startup' ? 'startup' : 'interval';
+  let preset = null;
+  let intervalHours = null;
+
+  if (scheduleType === 'interval') {
+    const presets = new Map([
+      ['12h', 12],
+      ['24h', 24],
+    ]);
+    if (typeof scheduleRaw.preset === 'string' && presets.has(scheduleRaw.preset)) {
+      preset = scheduleRaw.preset;
+      intervalHours = presets.get(scheduleRaw.preset);
+    } else {
+      const normalizedInterval = normalizePositiveInteger(scheduleRaw.intervalHours);
+      if (normalizedInterval && normalizedInterval >= 1 && normalizedInterval <= 72) {
+        intervalHours = normalizedInterval;
+      } else {
+        intervalHours = DEFAULT_RETENTION_POLICY.schedule.intervalHours;
+        preset = DEFAULT_RETENTION_POLICY.schedule.preset;
+      }
+    }
+  } else {
+    preset = 'startup';
+    intervalHours = null;
+  }
+
+  return {
+    mode,
+    maxDays: mode === 'recommended' ? DEFAULT_RETENTION_POLICY.maxDays : maxDays,
+    maxEntries: mode === 'recommended' ? DEFAULT_RETENTION_POLICY.maxEntries : maxEntries,
+    schedule: {
+      type: scheduleType,
+      preset: scheduleType === 'startup' ? 'startup' : preset,
+      intervalHours: scheduleType === 'startup' ? null : intervalHours,
+    },
+  };
+};
+
 const resolveUserDataDir = (app) => {
   const dirName = app.isPackaged ? 'Revoice' : 'Revoice-dev';
   const base = app.getPath('appData');
@@ -96,6 +161,38 @@ const initialize = (app) => {
   dbInstance.pragma('foreign_keys = ON');
   applyMigrations(dbInstance);
   return { db: dbInstance, path: dbFilePath };
+};
+
+const getSetting = (key) => {
+  const db = ensureInitialized();
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+  if (!row) return null;
+  try {
+    return row.value ? JSON.parse(row.value) : null;
+  } catch (err) {
+    return null;
+  }
+};
+
+const setSetting = (key, value) => {
+  const db = ensureInitialized();
+  const payload = value === undefined ? null : value;
+  const stmt = db.prepare(
+    `INSERT INTO settings (key, value, updated_at) VALUES (@key, @value, @updatedAt)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+  );
+  stmt.run({ key, value: payload === null ? null : JSON.stringify(payload), updatedAt: nowISO() });
+};
+
+const getRetentionPolicy = () => {
+  const raw = getSetting('historyRetentionPolicy');
+  return normalizeRetentionPolicy(raw);
+};
+
+const setRetentionPolicy = (policy) => {
+  const normalized = normalizeRetentionPolicy(policy);
+  setSetting('historyRetentionPolicy', normalized);
+  return normalized;
 };
 
 const storeTranscription = (entry) => {
@@ -215,6 +312,25 @@ const pruneBeforeISO = (isoString) => {
   return { changes: result.changes };
 };
 
+const pruneExceedingCount = (maxEntries) => {
+  const db = ensureInitialized();
+  const numericLimit = normalizePositiveInteger(maxEntries);
+  if (!numericLimit) return { changes: 0 };
+  const stmt = db.prepare(`
+    DELETE FROM transcriptions
+    WHERE id IN (
+      SELECT id FROM (
+        SELECT id,
+               ROW_NUMBER() OVER (ORDER BY datetime(created_at) DESC, id DESC) AS rn
+        FROM transcriptions
+      ) ranked
+      WHERE rn > @limit
+    )
+  `);
+  const result = stmt.run({ limit: numericLimit });
+  return { changes: result.changes };
+};
+
 const getDatabaseFilePath = () => dbFilePath;
 
 module.exports = {
@@ -226,6 +342,12 @@ module.exports = {
   clearAll,
   deleteByIds,
   pruneBeforeISO,
+  pruneExceedingCount,
   getDatabaseFilePath,
   generatePreview,
+  getSetting,
+  setSetting,
+  getRetentionPolicy,
+  setRetentionPolicy,
+  DEFAULT_RETENTION_POLICY,
 };
