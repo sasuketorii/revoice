@@ -2,9 +2,12 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
+const historyStorage = require('./history/storage');
 
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 let mainWindow;
+let historyDbPath = null;
+let historyInitError = null;
 
 function isDev() {
   return !app.isPackaged;
@@ -133,7 +136,26 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  try {
+    const { path: dbPath } = historyStorage.initialize(app);
+    historyDbPath = dbPath;
+  } catch (err) {
+    historyInitError = err;
+    console.error('Failed to initialize history storage', err);
+  }
+
   createWindow();
+
+  if (mainWindow) {
+    mainWindow.webContents.once('did-finish-load', () => {
+      if (historyInitError) {
+        emitSystemLog(mainWindow, `DB error: ${historyInitError.message}`);
+      } else if (historyDbPath) {
+        emitSystemLog(mainWindow, `SQLite history ready: ${historyDbPath}`);
+      }
+    });
+  }
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -178,6 +200,7 @@ ipcMain.on('transcribe:start', (event, payload) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   const python = resolvePython();
   const projectRoot = resolveProjectRoot();
+  const startedAtTs = Date.now();
 
   const args = [
     '-m', 'revoice.cli',
@@ -280,11 +303,118 @@ ipcMain.on('transcribe:start', (event, payload) => {
           outputPath = null;
         }
       }
+
+      try {
+        const durationSecRaw = (Date.now() - startedAtTs) / 1000;
+        const durationSec = Number.isFinite(durationSecRaw) ? Math.max(0, durationSecRaw) : null;
+        const record = historyStorage.storeTranscription({
+          inputPath: payload.inputPath ?? null,
+          outputPath,
+          transcript: transcriptText ?? '',
+          model: payload.model ?? null,
+          language: payload.language ?? null,
+          createdAt: new Date().toISOString(),
+          duration: durationSec,
+          status: 'completed',
+        });
+        emitSystemLog(win, `履歴を保存しました (#${record.id})`);
+        win.webContents.send('history:item-added', record);
+      } catch (err) {
+        emitSystemLog(win, `履歴の保存に失敗しました: ${err}`);
+      }
+
       win.webContents.send('transcribe:done', { ok: true, outputPath, transcript: transcriptText });
     } else {
+      try {
+        const durationSecRaw = (Date.now() - startedAtTs) / 1000;
+        const durationSec = Number.isFinite(durationSecRaw) ? Math.max(0, durationSecRaw) : null;
+        const record = historyStorage.storeTranscription({
+          inputPath: payload.inputPath ?? null,
+          outputPath: null,
+          transcript: '',
+          model: payload.model ?? null,
+          language: payload.language ?? null,
+          createdAt: new Date().toISOString(),
+          duration: durationSec,
+          status: 'failed',
+          notes: `Exit code: ${code ?? 'unknown'}`,
+        });
+        emitSystemLog(win, `失敗したジョブを履歴に保存しました (#${record.id})`);
+        win.webContents.send('history:item-added', record);
+      } catch (err) {
+        emitSystemLog(win, `失敗ジョブの履歴保存に失敗しました: ${err}`);
+      }
       win.webContents.send('transcribe:done', { ok: false, code });
     }
   });
+});
+
+ipcMain.handle('history:list', async (_event, options = {}) => {
+  try {
+    const rawLimit = Number(options.limit);
+    const rawOffset = Number(options.offset);
+    const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(100, Math.floor(rawLimit))) : 20;
+    const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.floor(rawOffset)) : 0;
+    const items = historyStorage.listTranscriptions({ limit, offset });
+    const total = historyStorage.countTranscriptions();
+    return { ok: true, items, total, limit, offset };
+  } catch (err) {
+    console.error('history:list failed', err);
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('history:detail', async (_event, id) => {
+  try {
+    const numericId = Number(id);
+    if (!Number.isInteger(numericId) || numericId <= 0) {
+      throw new Error('Invalid history id');
+    }
+    const item = historyStorage.getTranscription(numericId) ?? null;
+    return { ok: true, item };
+  } catch (err) {
+    console.error('history:detail failed', err);
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('history:clear', async () => {
+  try {
+    const { changes } = historyStorage.clearAll();
+    const total = historyStorage.countTranscriptions();
+    BrowserWindow.getAllWindows().forEach((win) => {
+      emitSystemLog(win, `履歴を削除しました (${changes}件)`);
+      win.webContents.send('history:cleared', { removed: changes, total });
+    });
+    return { ok: true, removed: changes };
+  } catch (err) {
+    console.error('history:clear failed', err);
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('history:delete', async (_event, ids) => {
+  try {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return { ok: true, removed: 0 };
+    }
+    const numericIds = ids
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value > 0);
+    if (numericIds.length === 0) {
+      return { ok: true, removed: 0 };
+    }
+    const { changes } = historyStorage.deleteByIds(numericIds);
+    const total = historyStorage.countTranscriptions();
+    BrowserWindow.getAllWindows().forEach((win) => {
+      emitSystemLog(win, `履歴から ${changes} 件を削除しました`);
+      win.webContents.send('history:deleted', { removed: changes, ids: numericIds, total });
+    });
+    return { ok: true, removed: changes };
+  } catch (err) {
+    console.error('history:delete failed', err);
+    return { ok: false, error: err.message };
+  }
 });
 
 ipcMain.on('process:kill', (event, pid) => {
