@@ -19,6 +19,7 @@ dist/
 # Tooling
 .serena/
 .gitdir/
+.revoice-logs/
 
 # Misc
 *.log
