@@ -1,0 +1,29 @@
+[build-system]
+requires = [
+  "setuptools==80.9.0",
+  "wheel==0.45.1",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "revoice"
+version = "0.1.0"
+description = "Local speech-to-text CLI powered by faster-whisper (CTranslate2)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary (project-internal)" }
+authors = [{ name = "sasuke_short" }]
+dependencies = [
+  "faster-whisper==1.2.0",
+  "imageio-ffmpeg==0.6.0",
+  "numpy==2.3.3",
+  "tqdm==4.67.1",
+  "soundfile==0.13.1",
+]
+
+[project.scripts]
+revoice = "revoice.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["revoice*"]
+exclude = ["archive", "electron"]
