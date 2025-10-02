@@ -1,153 +1,237 @@
-# AGENTS.md - Revoice起動手順ガイド
+# AGENTS.md — Revoice 開発・運用ハンドブック
 
-## 🎯 最適な起動方法
+このドキュメントは、新しく参画した開発者・運用担当者が “Revoice” アプリを迷わず準備・実行・保守できるようにまとめたものです。Python 仮想環境から Electron/React の開発、SQLite ベースの履歴管理まで、現状の構成と今後の計画を含めて網羅しています。
 
-### 🥇 推奨：ワンコマンド起動
+---
+
+## 1. プロジェクト概要
+- **目的**: ローカル実行の高精度文字起こしツール（Electron + React + faster-whisper）。
+- **構成**:
+  - `electron/` … Electron 本体、React レンダラー、プリロードスクリプト、ビルド設定。
+  - `revoice/` … Python パッケージ。faster-whisper CLI、整形ロジックなど。
+  - `archive/` … 文字起こし結果や変換済み音声ファイルの保存先（デフォルト）。
+  - `PLAN.md` … ロードマップ。SQLite 履歴、マルチタブ等の設計方針はここを参照。
+  - `AGENTS.md` … 本ドキュメント（作業手順の基準書）。
+
+---
+
+## 2. 必要ツールと前提バージョン
+| 種類 | 推奨バージョン | 補足 |
+| --- | --- | --- |
+| macOS | 13 Ventura 以降 | Windows/Linux も想定、現状は macOS 赤実績 |
+| Node.js | 20.x LTS | `npm` 同梱。`corepack enable` 済みなら pnpm も利用可 |
+| Python | 3.11.x | 仮想環境は `.venv/` を利用。faster-whisper が 3.9+ 必須 |
+| ffmpeg | 6.x 以上 | 音声抽出と将来の変換機能で使用 |
+| SQLite3 | OS 同梱で可 | Electron 同梱ライブラリは `better-sqlite3` |
+
+> **Tip:** `python3 -V` / `node -v` / `ffmpeg -version` で事前確認。
+
+---
+
+## 3. Python 仮想環境と依存パッケージ
+1. 仮想環境を作成
+   ```bash
+   cd /Users/sasuketorii/Revoice
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
+2. 開発モードでパッケージをインストール
+   ```bash
+   python -m pip install --upgrade pip
+   python -m pip install -e .
+   ```
+3. 動作確認
+   ```bash
+   python -c "import faster_whisper; print('faster-whisper OK')"
+   ```
+
+> Electron 起動時は自動で適切な Python を検出しますが、CLI 利用やテスト時は `.venv` の利用を推奨します。
+
+---
+
+## 4. Node / React 側依存インストール
+```bash
+cd /Users/sasuketorii/Revoice/electron
+npm install
+```
+- `package.json` 内の主要コマンド:
+  - `npm run dev` … Vite + Electron を同時起動。
+  - `npm run renderer:dev` … レンダラー(Vite)のみ起動。
+  - `npm run renderer:build` … 本番ビルド（整形確認用）。
+
+---
+
+## 5. 開発サーバー起動手順
+### 🥇 推奨: ワンコマンド
 ```bash
 cd /Users/sasuketorii/Revoice && ./start-revoice.sh
 ```
+- `start-revoice.sh` は `start-clean.sh` でプロセスを掃除した後、Electron まで起動します。
 
-### 🥈 手動クリーンアップ + 起動
+### 🥈 手動ステップ
 ```bash
 cd /Users/sasuketorii/Revoice
-./start-clean.sh
+./start-clean.sh              # プロセス・ポート掃除
 cd electron
 npm run dev
 ```
 
-### 🥉 従来の方法（リスクあり）
+### 🥉 最小構成（非推奨）
 ```bash
 cd /Users/sasuketorii/Revoice/electron
 npm run dev
 ```
+> クリーンアップを省略するためポート衝突が起こりやすいので避けてください。
 
-## 🛡️ トラブルシューティング
+---
 
-### よくある問題と解決方法
+## 6. SQLite 履歴データベース
+- デフォルトファイル: `~/Library/Application Support/Revoice-dev/history.db`（macOS）。
+- テーブル:
+  - `transcriptions` … 文字起こし結果のメタデータ。
+  - `settings` … JSON 形式で各種設定（履歴ポリシー、フォーマット既定値など）。
+  - `model_profiles` … `id`, `label`, `engine`, `params`, `created_at`, `updated_at`。
+  - （今後）`jobs`, `tabs`, `job_events` … マルチタブ／並列ジョブ管理用。
+- マイグレーションは Electron 起動時に実行予定（実装中）。
+- 破損時のリセット: アプリ停止 → `history.db` をバックアップ → 削除 → 再起動で再生成。
 
-#### 1. ポート5173が使用中エラー
+---
+
+## 7. 設定とプロファイルの挙動
+| 設定項目 | 保存先 | 備考 |
+| --- | --- | --- |
+| 文字起こしフォーマット（タイムスタンプ有/無/Markdownβ） | `settings` テーブル | タブで変更するとグローバル既定値も更新 |
+| 履歴保持ポリシー（推奨 or カスタム） | 同上 | カスタム時は日数・件数・間隔を JSON で保持。0 は `null` に変換 |
+| モデルプロファイル（高精度/高速） | `model_profiles` + `settings` | ヘッダーと設定画面で同期、切り替え時に 3 秒の ETA バナー表示 |
+
+---
+
+## 8. ビルドとテスト
+- レンダラー整合性チェック
+  ```bash
+  cd electron
+  npm run renderer:build
+  ```
+- Python CLI テスト（任意）
+  ```bash
+  source .venv/bin/activate
+  python -m revoice.cli <INPUT_FILE> --output_dir archive/test
+  ```
+- ログ確認: Electron 起動後、アプリ下部のログパネルまたはコンソールで `[SYSTEM] ...` を探す。
+
+---
+
+## 9. トラブルシューティング
+### ① ポート5173の競合
 ```
 Error: Port 5173 is already in use
 ```
-
-**原因：** 以前のプロセスが残っている
-
-**解決方法：**
+**対処**
 ```bash
-# プロセス確認
 lsof -i :5173
-
-# 強制終了
 lsof -ti :5173 | xargs kill -9
-
 # または
 pkill -f "vite|electron|wait-on"
 ```
 
-#### 2. Electronウィンドウが白紙
+### ② Electron ウィンドウが真っ白
 ```
 ERR_CONNECTION_REFUSED
 ```
-
-**原因：** Viteサーバーが停止している
-
-**解決方法：**
+**原因**: Vite が落ちている。
 ```bash
-# Viteサーバーを再起動
-cd /Users/sasuketorii/Revoice/electron
+cd electron
 npm run renderer:dev
 ```
 
-#### 3. faster-whisperエラー
+### ③ faster-whisper が見つからない
 ```
-[ERROR] faster-whisper is not installed: No module named 'faster_whisper'
+[ERROR] faster-whisper is not installed
 ```
-
-**原因：** Python依存関係がインストールされていない
-
-**解決方法：**
+**対処**
 ```bash
 cd /Users/sasuketorii/Revoice
 source .venv/bin/activate
 python -m pip install -e .
 ```
 
-## 🔧 作成されたスクリプト
+### ④ DB 関連
+- `[SYSTEM] DB error ...` が表示されたら `history.db` をバックアップして削除 → 再起動。
+- 自動整理が動かない場合は設定画面で間隔・値が保存されているか確認。
 
-### start-clean.sh（クリーンアップ専用）
-- ポート5173の使用状況確認
-- 古いプロセスを自動終了
-- Electron関連プロセスのクリーンアップ
-- 最終確認でエラー防止
+### ⑤ 既知のログ
+- `[SYSTEM] Queueing job ...` … 並列タブ上限でキュー待ち。現状は最大4タブ。
+- `[SYSTEM] Transcriptを読み込みました: ...` … 文字起こし結果を SQLite に反映済み。
 
-### start-revoice.sh（完全自動起動）
-- クリーンアップ自動実行
-- プロジェクトディレクトリ移動
-- Electronディレクトリ移動
-- 開発サーバー起動
+---
 
-## 📋 完全リセット手順
-
-問題が解決しない場合の完全リセット：
-
+## 10. 完全リセット手順
 ```bash
 cd /Users/sasuketorii/Revoice
-
-# 1. 全プロセス終了
 pkill -f "electron|vite|wait-on|npm.*dev"
-
-# 2. ポート確認
 lsof -i :5173
-
-# 3. クリーンアップ実行
 ./start-clean.sh
-
-# 4. 3秒待機
 sleep 3
-
-# 5. 起動
 ./start-revoice.sh
-```
-
-## 🚀 起動確認チェックリスト
-
-起動が成功した場合の確認項目：
-
-- [ ] Viteサーバーが `http://127.0.0.1:5173/` で起動
-- [ ] Electronウィンドウが開く
-- [ ] ウィンドウが白紙でない（UIが表示される）
-- [ ] 音声ファイル選択ボタンが表示される
-- [ ] 開発者ツールが開く（開発モード）
-
-## 📝 注意事項
-
-1. **venvは不要** - Electronアプリ起動時はvenvに移動する必要はない
-2. **Python処理** - Electronが自動で適切なPython環境を選択する
-3. **プロセス管理** - 終了時は`Ctrl+C`で正常に終了する
-4. **ポート競合** - 他のアプリがポート5173を使用していないか確認
-
-## 🔍 デバッグコマンド
-
-問題の診断に使用するコマンド：
-
-```bash
-# プロセス確認
-ps aux | grep -E "(electron|vite|wait-on|npm)"
-
-# ポート確認
-lsof -i :5173
-
-# HTTP接続テスト
-curl -I http://127.0.0.1:5173/
-
-# Python環境確認
-cd /Users/sasuketorii/Revoice
-source .venv/bin/activate
-python -c "import faster_whisper; print('OK')"
 ```
 
 ---
 
-**最終更新：** 2025年10月2日  
-**作成者：** AI Assistant  
-**目的：** Revoiceアプリの確実な起動とトラブルシューティング
+## 11. 最低限の動作確認チェック
+- [ ] `http://127.0.0.1:5173/` が 200 を返す
+- [ ] Electron ウィンドウが表示される
+- [ ] UI 下部にログパネルが表示される
+- [ ] ファイル選択ボタンがアクティブ
+- [ ] 文字起こし結果欄にテキストが表示される
+- [ ] `[SYSTEM]` と `[PROGRESS]` ログが流れる
+
+---
+
+## 12. 新機能ロードマップ概要
+詳細は `PLAN.md` を参照。特に:
+- 履歴の SQLite 永続化（実装中）
+- 履歴保持ポリシー UI（推奨/カスタム）
+- タイムスタンプ無し＋Markdown 整形
+- モデルプロファイル切り替えと ETA 表示
+- マルチタブ & 音声変換サイドバー（最大4タブ）
+
+---
+
+## 13. ディレクトリクイックリファレンス
+```
+Revoice/
+├── AGENTS.md            # 本ドキュメント
+├── PLAN.md              # detailed roadmap
+├── archive/             # 出力フォルダ（デフォルト）
+├── electron/
+│   ├── main.js          # Electron メインプロセス
+│   ├── preload.js       # コンテキストブリッジ
+│   ├── renderer/        # React ソース
+│   └── package.json
+├── revoice/
+│   ├── cli.py           # faster-whisper CLI
+│   └── postprocess.py   # 整形ロジック（導入予定）
+├── start-clean.sh
+└── start-revoice.sh
+```
+
+---
+
+## 14. よくある質問 (FAQ)
+**Q. venv に入らなくても Electron は動く？**  
+A. はい。メインプロセスが自動で Python を検出しますが、CLI やテストは `.venv` 利用を推奨。
+
+**Q. SQLite はどこに置けばよい？**  
+A. macOS 開発時は `~/Library/Application Support/Revoice-dev/` に作成されます。環境に合わせて `app.getPath('userData')` が参照されます。
+
+**Q. 文字起こしが空になるときは？**  
+A. `[SYSTEM] Transcript...` ログを確認。ファイル名のNFC/NFD差異や出力先の権限が問題になる場合があります。
+
+**Q. モデルを切り替えても速度が変わらない？**  
+A. 入力の長さや CPU/GPU 状況によります。`PLAN.md` のプロファイル設計を参照し、必要に応じて `params JSON` を調整してください。
+
+---
+
+**最終更新**: 2025年10月2日  
+**記録担当**: AI Assistant  
+**用途**: Revoice アプリの開発・運用・トラブルシューティングを誰でも再現できるようにするための基準書
