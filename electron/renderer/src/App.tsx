@@ -1,21 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ChangeEvent } from 'react';
-import type { HistoryRecord, TranscriptionPayload, RetentionPolicy } from './types';
-
-type TranscribeStatus = 'idle' | 'running' | 'success' | 'error';
+import type { ChangeEvent, SVGProps } from 'react';
+import type {
+  HistoryRecord,
+  JobEventMessage,
+  JobStatus,
+  JobSummary,
+  RetentionPolicy,
+  TabSummary,
+  TranscriptionJobPayload,
+} from './types';
 
 type LogEntry = {
   id: number;
   timestamp: string;
   message: string;
   level: 'info' | 'error';
-};
-
-type DoneEvent = {
-  ok: boolean;
-  code?: number;
-  outputPath?: string | null;
-  transcript?: string | null;
 };
 
 type HistoryEntry = {
@@ -32,73 +31,22 @@ type HistoryEntry = {
   duration: number | null;
 };
 
-const HISTORY_PAGE_SIZE = 20;
-const PROGRESS_REGEX = /^\[PROGRESS\]\s+(\d+(?:\.\d+)?)$/;
-const PREVIEW_MAX_LENGTH = 400;
-const OUTPUT_STYLE_LABELS: Record<'timestamps' | 'plain', string> = {
-  timestamps: 'タイムスタンプあり',
-  plain: 'タイムスタンプなし',
+type TabState = {
+  id: string;
+  title: string;
+  inputPath: string;
+  jobId: string | null;
+  status: JobStatus | 'idle';
+  queuePosition: number | null;
+  progress: number | null;
+  pid: number | null;
+  outputPath: string | null;
+  transcript: string;
+  logs: LogEntry[];
+  errorMessage: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
 };
-
-const BASE_PAYLOAD: Omit<TranscriptionPayload, 'inputPath'> = {
-  outputDir: 'archive',
-  model: 'large-v3',
-  language: 'ja',
-  beamSize: 5,
-  computeType: 'int8',
-  formats: 'txt',
-  outputStyle: 'plain',
-  minSegment: 0.6,
-  preset: 'balanced',
-  memo: false,
-};
-
-const STATUS_LABEL: Record<TranscribeStatus, string> = {
-  idle: '待機中',
-  running: '解析中…',
-  success: '完了',
-  error: 'エラー',
-};
-
-const formatHistoryTime = (iso: string) => {
-  try {
-    return new Intl.DateTimeFormat('ja-JP', {
-      dateStyle: 'medium',
-      timeStyle: 'medium',
-    }).format(new Date(iso));
-  } catch (err) {
-    return iso;
-  }
-};
-
-const fileNameFromPath = (path: string) => path.split(/[\\/]/).pop() ?? path;
-
-const buildHistoryLabel = (record: { inputPath?: string | null; outputPath?: string | null }) => {
-  if (record.outputPath) return fileNameFromPath(record.outputPath);
-  if (record.inputPath) return fileNameFromPath(record.inputPath);
-  return '文字起こし結果';
-};
-
-const createPreview = (text: string) => {
-  if (!text) return '';
-  const trimmed = text.trim();
-  if (!trimmed) return '';
-  return trimmed.length <= PREVIEW_MAX_LENGTH ? trimmed : `${trimmed.slice(0, PREVIEW_MAX_LENGTH)}…`;
-};
-
-const historyRecordToEntry = (record: HistoryRecord): HistoryEntry => ({
-  id: record.id,
-  label: buildHistoryLabel(record),
-  finishedAt: record.createdAt,
-  outputPath: record.outputPath ?? null,
-  transcript: record.transcriptFull?.trim() ?? '',
-  transcriptPreview: record.transcriptPreview ? createPreview(record.transcriptPreview) : '',
-  inputPath: record.inputPath ?? '',
-  model: record.model ?? null,
-  language: record.language ?? null,
-  status: record.status ?? null,
-  duration: record.duration ?? null,
-});
 
 type ScheduleOption = '12h' | '24h' | 'startup' | 'custom';
 
@@ -110,38 +58,17 @@ type RetentionFormState = {
   scheduleHours: string;
 };
 
-type ActivePage =
-  | 'vtt-transcribe'
-  | 'vtt-history'
-  | 'vtt-logs'
-  | 'mtv-convert'
-  | 'mtv-logs'
-  | 'settings-vtt'
-  | 'settings-mtv';
-
-const IconEye = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M1.5 12s3.5-6.5 10.5-6.5S22.5 12 22.5 12s-3.5 6.5-10.5 6.5S1.5 12 1.5 12Z" />
-    <circle cx="12" cy="12" r="3" />
-  </svg>
-);
-
-const IconCopy = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-  </svg>
-);
-
-const IconTrash = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <polyline points="3 6 5 6 21 6" />
-    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
-    <path d="M10 11v6" />
-    <path d="M14 11v6" />
-    <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
-  </svg>
-);
+const HISTORY_PAGE_SIZE = 20;
+const PREVIEW_MAX_LENGTH = 400;
+const MAX_CUSTOM_DAYS = 365;
+const MAX_CUSTOM_ENTRIES = 10000;
+const MIN_INTERVAL_HOURS = 1;
+const MAX_INTERVAL_HOURS = 72;
+const MAX_VISIBLE_TABS = 4;
+const OUTPUT_STYLE_LABELS: Record<'timestamps' | 'plain', string> = {
+  timestamps: 'タイムスタンプあり',
+  plain: 'タイムスタンプなし',
+};
 
 const RECOMMENDED_POLICY: RetentionPolicy = {
   mode: 'recommended',
@@ -154,18 +81,87 @@ const RECOMMENDED_POLICY: RetentionPolicy = {
   },
 };
 
-const MAX_CUSTOM_DAYS = 365;
-const MAX_CUSTOM_ENTRIES = 10000;
-const MIN_INTERVAL_HOURS = 1;
-const MAX_INTERVAL_HOURS = 72;
+const TAB_STATUS_LABEL: Record<JobStatus | 'idle', string> = {
+  idle: '待機中',
+  queued: '待機中',
+  running: '解析中…',
+  completed: '完了',
+  failed: '失敗',
+  cancelled: 'キャンセル',
+};
+
+const STATUS_PILL_CLASS: Record<JobStatus | 'idle', string> = {
+  idle: 'idle',
+  queued: 'running',
+  running: 'running',
+  completed: 'success',
+  failed: 'error',
+  cancelled: 'error',
+};
+
+const revoiceLogo = new URL('./assets/revoice-logo.png', import.meta.url).href;
+
+const IconRefresh = (props: SVGProps<SVGSVGElement>) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <polyline points="23 4 23 10 17 10" />
+    <polyline points="1 20 1 14 7 14" />
+    <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10" />
+    <path d="M20.49 15a9 9 0 0 1-14.13 3.36L1 14" />
+  </svg>
+);
+
+const IconCopy = (props: SVGProps<SVGSVGElement>) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+  </svg>
+);
+
+const IconTrash = (props: SVGProps<SVGSVGElement>) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <polyline points="3 6 5 6 21 6" />
+    <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+    <path d="M10 11v6" />
+    <path d="M14 11v6" />
+    <path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2" />
+  </svg>
+);
+
+const createPreview = (text: string) => {
+  if (!text) return '';
+  const trimmed = text.trim();
+  return trimmed.length <= PREVIEW_MAX_LENGTH ? trimmed : `${trimmed.slice(0, PREVIEW_MAX_LENGTH)}…`;
+};
+
+const formatHistoryTime = (iso: string) => {
+  try {
+    return new Intl.DateTimeFormat('ja-JP', { dateStyle: 'medium', timeStyle: 'medium' }).format(new Date(iso));
+  } catch (err) {
+    return iso;
+  }
+};
+
+const fileNameFromPath = (path: string) => path.split(/[\\/]/).pop() ?? path;
+
+const historyRecordToEntry = (record: HistoryRecord): HistoryEntry => ({
+  id: record.id,
+  label: fileNameFromPath(record.outputPath ?? record.inputPath ?? ''),
+  finishedAt: record.createdAt,
+  outputPath: record.outputPath ?? null,
+  transcript: record.transcriptFull?.trim() ?? '',
+  transcriptPreview: record.transcriptPreview ? createPreview(record.transcriptPreview) : '',
+  inputPath: record.inputPath ?? '',
+  model: record.model ?? null,
+  language: record.language ?? null,
+  status: record.status ?? null,
+  duration: record.duration ?? null,
+});
 
 const toFormState = (policy: RetentionPolicy): RetentionFormState => {
   const schedule = policy.schedule ?? RECOMMENDED_POLICY.schedule;
   const scheduleOption: ScheduleOption = (() => {
     if (schedule.type === 'startup') return 'startup';
-    if (schedule.preset === '12h' || schedule.preset === '24h') {
-      return schedule.preset;
-    }
+    if (schedule.preset === '12h' || schedule.preset === '24h') return schedule.preset;
     if (schedule.intervalHours && Number.isFinite(schedule.intervalHours) && schedule.intervalHours >= MIN_INTERVAL_HOURS) {
       return 'custom';
     }
@@ -228,21 +224,59 @@ const formStateToPolicy = (form: RetentionFormState): RetentionPolicy => {
   };
 };
 
+const buildTabState = (summary: TabSummary, job: JobSummary | null): TabState => {
+  const status = job?.status ?? 'idle';
+  return {
+    id: summary.id,
+    title: summary.title ?? 'タブ',
+    inputPath: job?.inputPath ?? '',
+    jobId: job?.id ?? summary.jobId ?? null,
+    status,
+    queuePosition: job?.queuePosition ?? null,
+    progress: job?.progress ?? (status === 'completed' ? 100 : null),
+    pid: job?.pid ?? null,
+    outputPath: job?.outputPath ?? null,
+    transcript: job?.transcript ?? '',
+    logs: [],
+    errorMessage: job?.error ?? null,
+    createdAt: summary.createdAt ?? null,
+    updatedAt: summary.updatedAt ?? null,
+  };
+};
+
+const mergeJobIntoTab = (tab: TabState, job: JobSummary): TabState => {
+  const status = job.status ?? tab.status;
+  let transcript = tab.transcript;
+  if (job.transcript && job.transcript.length > 0) {
+    transcript = job.transcript;
+  }
+  const outputPath = job.outputPath ?? tab.outputPath;
+  const progress = typeof job.progress === 'number' ? job.progress : tab.progress;
+  const errorMessage = job.error ?? (status === 'failed' ? 'ジョブが失敗しました' : status === 'cancelled' ? 'ジョブがキャンセルされました' : null);
+  return {
+    ...tab,
+    jobId: job.id,
+    status,
+    queuePosition: job.queuePosition ?? null,
+    progress,
+    pid: job.pid ?? null,
+    outputPath,
+    transcript,
+    errorMessage,
+  };
+};
+
 const App = () => {
-  const [inputPath, setInputPath] = useState('');
-  const [status, setStatus] = useState<TranscribeStatus>('idle');
-  const [pid, setPid] = useState<number | null>(null);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [outputPath, setOutputPath] = useState<string | null>(null);
-  const [transcript, setTranscript] = useState<string>('');
-  const [progress, setProgress] = useState<number | null>(null);
+  const [tabs, setTabs] = useState<TabState[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [tabsLoading, setTabsLoading] = useState(true);
+  const [jobsLoading, setJobsLoading] = useState(true);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [historyTotal, setHistoryTotal] = useState(0);
   const [historyCursor, setHistoryCursor] = useState(0);
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
-  const [activePage, setActivePage] = useState<ActivePage>('vtt-transcribe');
+  const [activePage, setActivePage] = useState<'vtt-transcribe' | 'vtt-history' | 'vtt-logs' | 'settings-vtt' | 'mtv-convert' | 'mtv-logs' | 'settings-mtv'>('vtt-transcribe');
   const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null);
   const [outputStyle, setOutputStyle] = useState<'timestamps' | 'plain'>('plain');
   const [outputStyleLoading, setOutputStyleLoading] = useState(true);
@@ -254,15 +288,28 @@ const App = () => {
   const [policyDirty, setPolicyDirty] = useState(false);
   const [policySuccess, setPolicySuccess] = useState<string | null>(null);
 
-  const logContainerRef = useRef<HTMLDivElement | null>(null);
   const logCounter = useRef(0);
-  const lastJobRef = useRef<{ inputPath: string; fileName: string; startedAt: string } | null>(null);
-  const pendingHistoryIdRef = useRef<number | null>(null);
-  const fallbackHistoryIdRef = useRef(0);
+  const jobMapRef = useRef<Map<string, JobSummary>>(new Map());
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const tabsRef = useRef<TabState[]>([]);
+  const activeTabIdRef = useRef<string | null>(null);
 
-  const statusLabel = useMemo(() => STATUS_LABEL[status], [status]);
-  const disabled = status === 'running';
-  const policySaveDisabled = useMemo(() => policyLoading || policySaving || !policyDirty, [policyLoading, policySaving, policyDirty]);
+  useEffect(() => {
+    tabsRef.current = tabs;
+  }, [tabs]);
+
+  useEffect(() => {
+    activeTabIdRef.current = activeTabId;
+  }, [activeTabId]);
+
+  const activeTab = useMemo(() => {
+    if (!activeTabId) return null;
+    return tabs.find((tab) => tab.id === activeTabId) ?? null;
+  }, [tabs, activeTabId]);
+
+  const statusLabel = useMemo(() => TAB_STATUS_LABEL[activeTab?.status ?? 'idle'], [activeTab]);
+  const statusPillClass = useMemo(() => STATUS_PILL_CLASS[activeTab?.status ?? 'idle'], [activeTab]);
+  const startDisabled = !activeTab || activeTab.status === 'running' || activeTab.status === 'queued';
 
   const scheduleOptionLabels: Record<ScheduleOption, string> = useMemo(
     () => ({
@@ -274,20 +321,257 @@ const App = () => {
     []
   );
 
+  const policySaveDisabled = useMemo(() => policyLoading || policySaving || !policyDirty, [policyLoading, policySaving, policyDirty]);
   const selectedHistory = useMemo(() => {
     if (selectedHistoryId === null) return null;
     return history.find((entry) => entry.id === selectedHistoryId) ?? null;
   }, [history, selectedHistoryId]);
 
-  const appendLog = useCallback((message: string, level: LogEntry['level'] = 'info') => {
-    const id = ++logCounter.current;
-    const timestamp = new Date().toLocaleTimeString('ja-JP', { hour12: false });
-    setLogs((prev) => {
-      const next = [...prev, { id, timestamp, message, level }];
-      return next.length > 300 ? next.slice(next.length - 300) : next;
-    });
+  const patchTab = useCallback((tabId: string, updater: (tab: TabState) => TabState) => {
+    setTabs((prev) => prev.map((tab) => (tab.id === tabId ? updater(tab) : tab)));
   }, []);
 
+  const appendTabLog = useCallback(
+    (tabId: string, message: string, level: LogEntry['level'] = 'info') => {
+      const id = ++logCounter.current;
+      const timestamp = new Date().toLocaleTimeString('ja-JP', { hour12: false });
+      patchTab(tabId, (tab) => {
+        const nextLogs = [...tab.logs, { id, timestamp, message, level }];
+        return {
+          ...tab,
+          logs: nextLogs.length > 300 ? nextLogs.slice(nextLogs.length - 300) : nextLogs,
+        };
+      });
+    },
+    [patchTab]
+  );
+
+  const appendAppLog = useCallback(
+    (message: string, level: LogEntry['level'] = 'info', targetTabId?: string | null) => {
+      const target = targetTabId ?? activeTabIdRef.current ?? tabsRef.current[0]?.id ?? null;
+      if (target) {
+        appendTabLog(target, message, level);
+      }
+    },
+    [appendTabLog]
+  );
+
+  const ensureActiveTab = useCallback(
+    (candidates: TabState[]) => {
+      setActiveTabId((prev) => {
+        if (prev && candidates.some((tab) => tab.id === prev)) {
+          return prev;
+        }
+        return candidates[0]?.id ?? null;
+      });
+    },
+    []
+  );
+
+  const getNextTabTitle = useCallback(() => {
+    const numbers = tabsRef.current
+      .map((tab) => {
+        const match = /^タブ\s*(\d+)$/u.exec(tab.title ?? '');
+        return match ? Number(match[1]) : null;
+      })
+      .filter((value): value is number => value !== null && Number.isFinite(value));
+    const maxNumber = numbers.length > 0 ? Math.max(...numbers) : 0;
+    return `タブ ${maxNumber + 1}`;
+  }, []);
+
+  const fetchHistory = useCallback(
+    async (offset = 0, append = false) => {
+      if (!window.revoice.listHistory) return;
+      setHistoryLoading(true);
+      try {
+        const response = await window.revoice.listHistory({ limit: HISTORY_PAGE_SIZE, offset });
+        if (response.ok) {
+          const entries = response.items.map((record) => historyRecordToEntry(record));
+          setHistory((prev) => {
+            if (append && offset > 0) {
+              const existingIndex = new Map(prev.map((item, index) => [item.id, index]));
+              const next = [...prev];
+              for (const entry of entries) {
+                if (existingIndex.has(entry.id)) {
+                  const idx = existingIndex.get(entry.id);
+                  if (idx !== undefined) {
+                    next[idx] = entry;
+                  }
+                } else {
+                  next.push(entry);
+                }
+              }
+              return next;
+            }
+            return entries;
+          });
+          const nextCursor = append ? offset + entries.length : entries.length;
+          setHistoryCursor(nextCursor);
+          setHistoryTotal(response.total);
+          setHistoryHasMore(nextCursor < response.total);
+        } else {
+          setHistoryHasMore(false);
+          appendAppLog(`[WARN] 履歴の読み込みに失敗しました: ${response.error ?? '不明なエラー'}`, 'error');
+        }
+      } catch (err) {
+        appendAppLog(`[WARN] 履歴の読み込み中にエラーが発生しました: ${err}`, 'error');
+      } finally {
+        setHistoryLoading(false);
+      }
+    },
+    [appendAppLog]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const bootstrap = async () => {
+      try {
+        setTabsLoading(true);
+        setJobsLoading(true);
+        const [tabResponse, jobResponse] = await Promise.all([
+          window.revoice.listTabs?.() ?? { ok: true, tabs: [] },
+          window.revoice.listJobs?.() ?? { ok: true, jobs: [] },
+        ]);
+        if (cancelled) return;
+
+        const jobMap = new Map<string, JobSummary>();
+        if (jobResponse.ok && jobResponse.jobs) {
+          for (const job of jobResponse.jobs) {
+            jobMap.set(job.id, job);
+          }
+        } else if (!jobResponse.ok && jobResponse.error) {
+          appendAppLog(`[WARN] ジョブ一覧の取得に失敗しました: ${jobResponse.error}`, 'error');
+        }
+        jobMapRef.current = jobMap;
+
+        let tabSummaries = tabResponse.ok && tabResponse.tabs ? tabResponse.tabs : [];
+        if (tabSummaries.length === 0) {
+          const created = await window.revoice.createTab?.({ title: 'タブ 1' });
+          if (created?.ok && created.tab) {
+            tabSummaries = [created.tab];
+          }
+        }
+
+        const initialTabs = tabSummaries.map((summary) => {
+          const job = summary.jobId ? jobMap.get(summary.jobId) ?? null : null;
+          return buildTabState(summary, job);
+        });
+        setTabs(initialTabs);
+        ensureActiveTab(initialTabs);
+      } catch (err) {
+        if (!cancelled) {
+          appendAppLog(`[WARN] タブ情報の初期化に失敗しました: ${err}`, 'error');
+        }
+      } finally {
+        if (!cancelled) {
+          setTabsLoading(false);
+          setJobsLoading(false);
+        }
+      }
+    };
+
+    void bootstrap();
+
+    const disposeJobEvent = window.revoice.onJobEvent?.((event: JobEventMessage) => {
+      if (cancelled) return;
+      if (event.kind === 'updated') {
+        const job = event.job;
+        jobMapRef.current.set(job.id, job);
+        if (job.tabId) {
+          patchTab(job.tabId, (tab) => mergeJobIntoTab(tab, job));
+        }
+      } else if (event.kind === 'log') {
+        const job = jobMapRef.current.get(event.jobId);
+        const tabId = job?.tabId;
+        if (tabId) {
+          appendTabLog(tabId, event.message, event.level);
+        }
+      }
+    });
+
+    const disposeTabEvent = window.revoice.onTabEvent?.((event) => {
+      if (cancelled) return;
+      if (event.kind === 'updated') {
+        const summary = event.tab;
+        const job = summary.jobId ? jobMapRef.current.get(summary.jobId) ?? null : null;
+        setTabs((prev) => {
+          const existing = prev.find((tab) => tab.id === summary.id);
+          if (existing) {
+            return prev.map((tab) =>
+              tab.id === summary.id
+                ? {
+                    ...existing,
+                    title: summary.title ?? existing.title,
+                    jobId: summary.jobId ?? existing.jobId,
+                    createdAt: summary.createdAt ?? existing.createdAt,
+                    updatedAt: summary.updatedAt ?? existing.updatedAt,
+                  }
+                : tab
+            );
+          }
+          return [...prev, buildTabState(summary, job)];
+        });
+      } else if (event.kind === 'removed') {
+        setTabs((prev) => {
+          const next = prev.filter((tab) => tab.id !== event.tabId);
+          if (next.length !== prev.length) {
+            setActiveTabId((prevActive) => (prevActive === event.tabId ? next[0]?.id ?? null : prevActive));
+          }
+          return next;
+        });
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      disposeJobEvent?.();
+      disposeTabEvent?.();
+    };
+  }, [appendAppLog, appendTabLog, ensureActiveTab, patchTab]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadTranscriptionDefaults = async () => {
+      if (!window.revoice.getTranscriptionDefaults) {
+        if (!cancelled) {
+          setOutputStyle('plain');
+          setOutputStyleLoading(false);
+        }
+        return;
+      }
+      setOutputStyleLoading(true);
+      try {
+        const response = await window.revoice.getTranscriptionDefaults();
+        if (cancelled) return;
+        if (response?.ok && response.outputStyle) {
+          setOutputStyle(response.outputStyle);
+        } else if (response?.error) {
+          appendAppLog(`[WARN] 出力スタイルの取得に失敗しました: ${response.error}`, 'error');
+          setOutputStyle('plain');
+        }
+      } catch (err) {
+        if (!cancelled) {
+          appendAppLog(`[WARN] 出力スタイルの取得中にエラーが発生しました: ${err}`, 'error');
+          setOutputStyle('plain');
+        }
+      } finally {
+        if (!cancelled) {
+          setOutputStyleLoading(false);
+        }
+      }
+    };
+
+    void loadTranscriptionDefaults();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [appendAppLog]);
+
+  useEffect(() => {
+    void fetchHistory(0, false);
+  }, [fetchHistory]);
   const markPolicyDirty = useCallback(() => {
     setPolicyDirty(true);
     setPolicyErrors([]);
@@ -424,7 +708,7 @@ const App = () => {
       } else {
         if (response?.error) {
           setPolicyErrors([response.error]);
-          appendLog(`[WARN] 履歴ポリシーの保存に失敗しました: ${response.error}`, 'error');
+          appendAppLog(`[WARN] 履歴ポリシーの保存に失敗しました: ${response.error}`, 'error');
           return;
         }
         setRetentionPolicy(payload);
@@ -435,282 +719,11 @@ const App = () => {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setPolicyErrors([`履歴ポリシーの保存に失敗しました: ${message}`]);
-      appendLog(`[WARN] 履歴ポリシーの保存中にエラーが発生しました: ${message}`, 'error');
+      appendAppLog(`[WARN] 履歴ポリシーの保存中にエラーが発生しました: ${message}`, 'error');
     } finally {
       setPolicySaving(false);
     }
-  }, [appendLog, policyForm, validatePolicyForm]);
-
-  const handleProcessLog = useCallback(
-    (chunk: string) => {
-      const lines = chunk.split(/\r?\n/);
-      for (const raw of lines) {
-        const text = raw.trim();
-        if (!text) continue;
-        const progressMatch = PROGRESS_REGEX.exec(text);
-        if (progressMatch) {
-          const value = Number(progressMatch[1]);
-          if (!Number.isNaN(value)) {
-            setProgress(Math.max(0, Math.min(100, value)));
-          }
-          continue;
-        }
-        const level = /\bERROR\b|\[ERROR]|\bFAILED\b/.test(text) ? 'error' : 'info';
-        appendLog(text, level);
-      }
-    },
-    [appendLog]
-  );
-
-  const loadHistoryContent = useCallback(
-    async (entry: HistoryEntry) => {
-      if (window.revoice?.getHistoryDetail) {
-        try {
-          const response = await window.revoice.getHistoryDetail(entry.id);
-          if (response?.ok && response.item) {
-            const transcript = response.item.transcriptFull?.trim() ?? '';
-            setHistory((prev) =>
-              prev.map((item) =>
-                item.id === entry.id
-                  ? {
-                      ...item,
-                      transcript,
-                      transcriptPreview: transcript ? createPreview(transcript) : item.transcriptPreview,
-                    }
-                  : item
-              )
-            );
-            if (transcript) return transcript;
-          }
-        } catch (err) {
-          appendLog(`[WARN] 履歴の取得に失敗しました: ${err}`, 'error');
-        }
-      }
-
-      if (entry.transcript && entry.transcript.trim()) {
-        return entry.transcript;
-      }
-      return '';
-    },
-    [appendLog]
-  );
-
-  const fetchHistory = useCallback(
-    async (offset = 0, append = false) => {
-      if (!window.revoice.listHistory) return;
-      setHistoryLoading(true);
-      try {
-        const response = await window.revoice.listHistory({ limit: HISTORY_PAGE_SIZE, offset });
-        if (response.ok) {
-          const entries = response.items.map((record) => historyRecordToEntry(record));
-          setHistory((prev) => {
-            if (append && offset > 0) {
-              const existingIndex = new Map(prev.map((item, index) => [item.id, index]));
-              const next = [...prev];
-              for (const entry of entries) {
-                if (existingIndex.has(entry.id)) {
-                  const idx = existingIndex.get(entry.id);
-                  if (idx !== undefined) {
-                    next[idx] = entry;
-                  }
-                } else {
-                  next.push(entry);
-                }
-              }
-              return next;
-            }
-            return entries;
-          });
-          const nextCursor = append ? offset + entries.length : entries.length;
-          setHistoryCursor(nextCursor);
-          setHistoryTotal(response.total);
-          setHistoryHasMore(nextCursor < response.total);
-        } else {
-          setHistoryHasMore(false);
-          appendLog(`[WARN] 履歴の読み込みに失敗しました: ${response.error ?? '不明なエラー'}`, 'error');
-        }
-      } catch (err) {
-        appendLog(`[WARN] 履歴の読み込み中にエラーが発生しました: ${err}`, 'error');
-      } finally {
-        setHistoryLoading(false);
-      }
-    },
-    [appendLog]
-  );
-
-  const handleDone = useCallback(
-    async (result: DoneEvent) => {
-      setPid(null);
-      if (result.ok) {
-        setStatus('success');
-        setErrorMessage(null);
-        setProgress(100);
-
-        setOutputPath(result.outputPath ?? null);
-
-        let text = '';
-        if (typeof result.transcript === 'string' && result.transcript.trim().length > 0) {
-          text = result.transcript.trim();
-        } else if (result.outputPath && window.revoice.readTextFile) {
-          try {
-            text = (await window.revoice.readTextFile(result.outputPath)).trim();
-          } catch (err) {
-            appendLog(`[WARN] 出力ファイルの読み込みに失敗しました: ${err}`, 'error');
-          }
-        }
-        setTranscript(text);
-        if (!text) {
-          appendLog('注意: 文字起こしファイルが空でした。', 'error');
-        }
-
-        appendLog('文字起こしが完了しました。', 'info');
-        if (result.outputPath) {
-          appendLog(`出力ファイル: ${result.outputPath}`, 'info');
-        }
-
-        const job = lastJobRef.current;
-        const preview = createPreview(text);
-        const historyId = pendingHistoryIdRef.current;
-
-        if (historyId !== null) {
-          setHistory((prev) =>
-            prev.map((item) =>
-              item.id === historyId
-                ? {
-                    ...item,
-                    label: job?.fileName ?? item.label,
-                    outputPath: result.outputPath ?? item.outputPath,
-                    transcript: text,
-                    transcriptPreview: preview || item.transcriptPreview,
-                    inputPath: job?.inputPath ?? item.inputPath,
-                    status: 'completed',
-                  }
-                : item
-            )
-          );
-          pendingHistoryIdRef.current = null;
-        } else {
-          const label = job?.fileName ?? (result.outputPath ? fileNameFromPath(result.outputPath) : '文字起こし結果');
-          const fallbackId = -(++fallbackHistoryIdRef.current);
-          const entry: HistoryEntry = {
-            id: fallbackId,
-            label,
-            finishedAt: new Date().toISOString(),
-            outputPath: result.outputPath ?? null,
-            transcript: text,
-            transcriptPreview: preview,
-            inputPath: job?.inputPath ?? '',
-            model: null,
-            language: null,
-            status: 'completed',
-            duration: null,
-          };
-          setHistory((prev) => [entry, ...prev]);
-        }
-        lastJobRef.current = null;
-      } else {
-        setStatus('error');
-        const message = `文字起こしに失敗しました (コード: ${result.code ?? '不明'})`;
-        setErrorMessage(message);
-        setOutputPath(null);
-        setTranscript('');
-        setProgress(null);
-        appendLog(message, 'error');
-        lastJobRef.current = null;
-        pendingHistoryIdRef.current = null;
-      }
-    },
-    [appendLog]
-  );
-
-  useEffect(() => {
-    const offPid = window.revoice.onPid((nextPid) => {
-      setPid(nextPid);
-      appendLog(`プロセス開始 (PID: ${nextPid})`, 'info');
-    });
-
-    const offLog = window.revoice.onLog(handleProcessLog);
-
-    const offError = window.revoice.onError((err) => {
-      setStatus('error');
-      setErrorMessage(err);
-      setPid(null);
-      setOutputPath(null);
-      setTranscript('');
-      setProgress(null);
-      appendLog(err, 'error');
-    });
-
-    const offDone = window.revoice.onDone((result) => {
-      void handleDone(result as DoneEvent);
-    });
-
-    return () => {
-      offPid?.();
-      offLog?.();
-      offError?.();
-      offDone?.();
-    };
-  }, [appendLog, handleProcessLog, handleDone]);
-
-  useEffect(() => {
-    void fetchHistory(0, false);
-  }, [fetchHistory]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const loadTranscriptionDefaults = async () => {
-      if (!window.revoice?.getTranscriptionDefaults) {
-        if (!cancelled) {
-          setOutputStyle('plain');
-          setOutputStyleLoading(false);
-        }
-        return;
-      }
-      setOutputStyleLoading(true);
-      try {
-        const response = await window.revoice.getTranscriptionDefaults();
-        if (cancelled) return;
-        if (response?.ok && response.outputStyle) {
-          setOutputStyle(response.outputStyle);
-        } else if (response?.error) {
-          appendLog(`[WARN] 出力スタイルの取得に失敗しました: ${response.error}`, 'error');
-          setOutputStyle('plain');
-        }
-      } catch (err) {
-        if (!cancelled) {
-          appendLog(`[WARN] 出力スタイルの取得中にエラーが発生しました: ${err}`, 'error');
-          setOutputStyle('plain');
-        }
-      } finally {
-        if (!cancelled) {
-          setOutputStyleLoading(false);
-        }
-      }
-    };
-
-    void loadTranscriptionDefaults();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [appendLog]);
-
-  useEffect(() => {
-    if (activePage === 'vtt-history' && history.length > 0) {
-      if (selectedHistoryId === null || !history.some((item) => item.id === selectedHistoryId)) {
-        setSelectedHistoryId(history[0].id);
-        void loadHistoryContent(history[0]);
-      }
-    }
-  }, [activePage, history, selectedHistoryId, loadHistoryContent]);
-
-  useEffect(() => {
-    if (history.length === 0) {
-      setSelectedHistoryId(null);
-    }
-  }, [history]);
+  }, [appendAppLog, policyForm, validatePolicyForm]);
 
   useEffect(() => {
     let cancelled = false;
@@ -735,7 +748,7 @@ const App = () => {
           setPolicyErrors([]);
         } else {
           if (response?.error) {
-            appendLog(`[WARN] 履歴ポリシーの取得に失敗しました: ${response.error}`, 'error');
+            appendAppLog(`[WARN] 履歴ポリシーの取得に失敗しました: ${response.error}`, 'error');
           }
           setRetentionPolicy(RECOMMENDED_POLICY);
           setPolicyForm(toFormState(RECOMMENDED_POLICY));
@@ -744,7 +757,7 @@ const App = () => {
       } catch (err) {
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err);
-          appendLog(`[WARN] 履歴ポリシーの取得中にエラーが発生しました: ${message}`, 'error');
+          appendAppLog(`[WARN] 履歴ポリシーの取得中にエラーが発生しました: ${message}`, 'error');
           setRetentionPolicy(RECOMMENDED_POLICY);
           setPolicyForm(toFormState(RECOMMENDED_POLICY));
           setPolicyDirty(false);
@@ -761,7 +774,7 @@ const App = () => {
     return () => {
       cancelled = true;
     };
-  }, [appendLog]);
+  }, [appendAppLog]);
 
   useEffect(() => {
     if (!policySuccess) return;
@@ -771,18 +784,11 @@ const App = () => {
 
   useEffect(() => {
     const disposeAdded = window.revoice.onHistoryAdded?.((record) => {
-      pendingHistoryIdRef.current = record.id;
-      setHistory((prev) => {
-        const entry = historyRecordToEntry(record);
-        const filtered = prev.filter((item) => item.id !== entry.id);
-        return [entry, ...filtered];
-      });
-      setHistoryTotal((prev) => Math.max(prev + 1, 1));
-      setHistoryCursor((prev) => prev + 1);
-      void fetchHistory(0, false);
+      const entry = historyRecordToEntry(record);
+      setHistory((prev) => [entry, ...prev]);
+      setHistoryTotal((prevTotal) => prevTotal + 1);
     });
     const disposeCleared = window.revoice.onHistoryCleared?.((payload) => {
-      pendingHistoryIdRef.current = null;
       setHistory([]);
       setHistoryTotal(payload?.total ?? 0);
       setHistoryCursor(0);
@@ -815,138 +821,156 @@ const App = () => {
     };
   }, [fetchHistory, historyTotal, policyDirty]);
 
-  useEffect(() => {
-    if (logContainerRef.current) {
-      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
-    }
-  }, [logs]);
+  const handleNativeFileChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      if (!activeTabId) return;
+      const file = event.target.files?.[0];
+      if (!file) return;
+      const filePath = (file as unknown as { path?: string }).path ?? file.name;
+      patchTab(activeTabId, (tab) => ({
+        ...tab,
+        inputPath: filePath,
+        outputPath: null,
+        transcript: '',
+        logs: [],
+        errorMessage: null,
+      }));
+      event.target.value = '';
+    },
+    [activeTabId, patchTab]
+  );
 
-  const handleBrowse = async () => {
-    const selected = await window.revoice.openFileDialog();
-    if (selected) {
-      setInputPath(selected);
-      setOutputPath(null);
-      setTranscript('');
-      setErrorMessage(null);
-      setProgress(null);
+  const handleBrowse = useCallback(async () => {
+    if (!activeTabId) return;
+    if (window.revoice?.openFileDialog) {
+      try {
+        const selected = await window.revoice.openFileDialog();
+        if (selected) {
+          patchTab(activeTabId, (tab) => ({
+            ...tab,
+            inputPath: selected,
+            outputPath: null,
+            transcript: '',
+            logs: [],
+            errorMessage: null,
+          }));
+        }
+        return;
+      } catch (err) {
+        appendAppLog(`[WARN] ファイル選択に失敗しました: ${err}`, 'error', activeTabId);
+      }
     }
-  };
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
+    }
+  }, [activeTabId, appendAppLog, patchTab]);
 
-  const handleStart = () => {
-    if (!inputPath) {
-      setErrorMessage('入力ファイルを選択してください');
+  const handleStart = useCallback(async () => {
+    const tab = activeTab;
+    if (!tab) return;
+    if (!tab.inputPath) {
+      appendTabLog(tab.id, '入力ファイルを選択してください', 'error');
+      patchTab(tab.id, (current) => ({ ...current, errorMessage: '入力ファイルを選択してください' }));
+      return;
+    }
+    if (!window.revoice.enqueueJob) {
+      appendTabLog(tab.id, 'このビルドではジョブのキュー登録に対応していません。', 'error');
       return;
     }
 
-    const fileName = fileNameFromPath(inputPath);
-
-    setStatus('running');
-    setPid(null);
-    setErrorMessage(null);
-    setLogs([]);
-    logCounter.current = 0;
-    setOutputPath(null);
-    setTranscript('');
-    setProgress(0);
-    pendingHistoryIdRef.current = null;
-
-    lastJobRef.current = {
-      inputPath,
-      fileName,
-      startedAt: new Date().toISOString(),
-    };
-
-    appendLog(`入力ファイル: ${fileName}`, 'info');
-    appendLog(`出力先 (予定): ${BASE_PAYLOAD.outputDir}/${fileName.replace(/\.[^.]+$/, '')}.txt`, 'info');
-    appendLog('Revoice CLI を起動します…', 'info');
-    appendLog(`出力スタイル: ${OUTPUT_STYLE_LABELS[outputStyle] ?? outputStyle}`, 'info');
-
-    const payload: TranscriptionPayload = {
-      ...BASE_PAYLOAD,
-      inputPath,
+    const payload: TranscriptionJobPayload = {
+      inputPath: tab.inputPath,
+      tabId: tab.id,
+      tabTitle: tab.title,
+      outputDir: 'archive',
+      model: 'large-v3',
+      language: 'ja',
+      beamSize: 5,
+      computeType: 'int8',
       outputStyle,
+      formats: 'txt,srt,vtt',
+      minSegment: 0.6,
+      preset: 'balanced',
+      memo: false,
     };
 
-    window.revoice.startTranscription(payload);
-  };
-
-  const handleCancel = () => {
-    if (pid) {
-      window.revoice.kill(pid);
-      appendLog(`PID ${pid} に停止シグナルを送信しました。`, 'info');
-      appendLog('処理を中断しました。', 'info');
-      setPid(null);
-      setStatus('idle');
-      setOutputPath(null);
-      setTranscript('');
-      setProgress(null);
-      setErrorMessage('ユーザーによって処理が中断されました');
-      lastJobRef.current = null;
+    try {
+      const response = await window.revoice.enqueueJob(payload);
+      if (response.ok && response.job) {
+        jobMapRef.current.set(response.job.id, response.job);
+        patchTab(tab.id, (current) => mergeJobIntoTab(current, response.job!));
+        appendTabLog(tab.id, 'ジョブをキューに追加しました。', 'info');
+      } else {
+        appendTabLog(tab.id, `ジョブのキュー追加に失敗しました: ${response.error ?? '不明なエラー'}`, 'error');
+      }
+    } catch (err) {
+      appendTabLog(tab.id, `ジョブのキュー追加でエラーが発生しました: ${err}`, 'error');
     }
-  };
+  }, [activeTab, appendTabLog, outputStyle, patchTab]);
 
-  const handleReset = () => {
-    setInputPath('');
-    setStatus('idle');
-    setPid(null);
-    setLogs([]);
-    logCounter.current = 0;
-    setErrorMessage(null);
-    setOutputPath(null);
-    setTranscript('');
-    setProgress(null);
-    lastJobRef.current = null;
-  };
-
-  const copyText = useCallback(
-    async (content: string, successMessage: string, emptyMessage?: string) => {
-      if (!content) {
-        if (emptyMessage) appendLog(emptyMessage, 'info');
-        return;
+  const handleCancel = useCallback(async () => {
+    const tab = activeTab;
+    if (!tab || !tab.jobId) return;
+    if (!window.revoice.cancelJob) {
+      appendTabLog(tab.id, 'このビルドではキャンセルに対応していません。', 'error');
+      return;
+    }
+    try {
+      const response = await window.revoice.cancelJob(tab.jobId);
+      if (!response.ok && response.error) {
+        appendTabLog(tab.id, `キャンセルに失敗しました: ${response.error}`, 'error');
       }
-      if (!navigator?.clipboard?.writeText) {
-        appendLog('クリップボード API が利用できません。', 'error');
-        return;
-      }
-      try {
-        await navigator.clipboard.writeText(content);
-        appendLog(successMessage, 'info');
-      } catch (err) {
-        appendLog(`クリップボードへのコピーに失敗しました: ${err}`, 'error');
-      }
-    },
-    [appendLog]
-  );
+    } catch (err) {
+      appendTabLog(tab.id, `キャンセルでエラーが発生しました: ${err}`, 'error');
+    }
+  }, [activeTab, appendTabLog]);
 
-  const handleCopyTranscript = () => {
-    copyText(transcript, '文字起こしをクリップボードにコピーしました。', 'コピーできる文字起こしがまだありません');
-  };
+  const handleReset = useCallback(() => {
+    if (!activeTabId) return;
+    patchTab(activeTabId, (tab) => ({
+      ...tab,
+      inputPath: '',
+      jobId: null,
+      status: 'idle',
+      queuePosition: null,
+      progress: null,
+      pid: null,
+      outputPath: null,
+      transcript: '',
+      logs: [],
+      errorMessage: null,
+    }));
+  }, [activeTabId, patchTab]);
 
-  const handleCopyLogs = () => {
-    const body = logs.map((entry) => `[${entry.timestamp}] ${entry.message}`).join('\n');
-    copyText(body, 'ログをクリップボードにコピーしました。', 'コピーできるログがまだありません');
-  };
+  const historyHasSelection = selectedHistoryId !== null;
 
-  const handleOutputStyleChange = useCallback(
-    async (style: 'timestamps' | 'plain') => {
-      setOutputStyle(style);
-      if (!window.revoice?.setTranscriptionDefaults) return;
-      try {
-        const response = await window.revoice.setTranscriptionDefaults({ outputStyle: style });
-        if (!response?.ok && response?.error) {
-          appendLog(`[WARN] 出力スタイルの保存に失敗しました: ${response.error}`, 'error');
+  const handleSelectHistory = useCallback(
+    async (entry: HistoryEntry) => {
+      setSelectedHistoryId(entry.id);
+      if (window.revoice?.getHistoryDetail) {
+        try {
+          const response = await window.revoice.getHistoryDetail(entry.id);
+          if (response?.ok && response.item?.transcriptFull) {
+            const transcript = response.item.transcriptFull.trim();
+            setHistory((prev) =>
+              prev.map((item) =>
+                item.id === entry.id
+                  ? {
+                      ...item,
+                      transcript,
+                      transcriptPreview: transcript ? createPreview(transcript) : item.transcriptPreview,
+                    }
+                  : item
+              )
+            );
+          }
+        } catch (err) {
+          appendAppLog(`[WARN] 履歴の取得に失敗しました: ${err}`, 'error');
         }
-      } catch (err) {
-        appendLog(`[WARN] 出力スタイルの保存中にエラーが発生しました: ${err}`, 'error');
       }
     },
-    [appendLog]
+    [appendAppLog]
   );
-
-  const handleCopyHistoryTranscript = async (entry: HistoryEntry) => {
-    const content = await loadHistoryContent(entry);
-    await copyText(content, '履歴の文字起こしをコピーしました。', 'この履歴にはコピーできる文字起こしがありません');
-  };
 
   const handleLoadMoreHistory = useCallback(() => {
     if (historyLoading) return;
@@ -956,44 +980,36 @@ const App = () => {
   const handleDeleteHistory = useCallback(
     async (entry: HistoryEntry) => {
       if (!window.revoice.deleteHistory) {
-        appendLog('このビルドでは履歴の削除に対応していません。', 'error');
+        appendAppLog('このビルドでは履歴の削除に対応していません。', 'error');
+        return;
+      }
+      const confirmed = window.confirm(`履歴 "${entry.label}" を削除しますか？`);
+      if (!confirmed) {
         return;
       }
       try {
         const response = await window.revoice.deleteHistory([entry.id]);
         if (response?.ok) {
-          setHistory((prev) => {
-            const next = prev.filter((item) => item.id !== entry.id);
-            if (entry.id === selectedHistoryId) {
-              setSelectedHistoryId(next.length > 0 ? next[0].id : null);
-            }
-            return next;
-          });
+          setHistory((prev) => prev.filter((item) => item.id !== entry.id));
           setHistoryTotal((prev) => Math.max(prev - 1, 0));
-          setHistoryCursor((prev) => Math.max(prev - 1, 0));
-          appendLog(`履歴 #${entry.id} を削除しました。`, 'info');
+          if (selectedHistoryId === entry.id) {
+            setSelectedHistoryId(null);
+          }
+          appendAppLog(`履歴 #${entry.id} を削除しました。`, 'info');
         } else {
-          appendLog(`[WARN] 履歴の削除に失敗しました: ${response?.error ?? '不明なエラー'}`, 'error');
+          appendAppLog(`[WARN] 履歴の削除に失敗しました: ${response?.error ?? '不明なエラー'}`, 'error');
         }
       } catch (err) {
-        appendLog(`[WARN] 履歴の削除でエラーが発生しました: ${err}`, 'error');
+        appendAppLog(`[WARN] 履歴の削除でエラーが発生しました: ${err}`, 'error');
       }
     },
-    [appendLog, selectedHistoryId]
-  );
-
-  const handleSelectHistory = useCallback(
-    async (entry: HistoryEntry) => {
-      setSelectedHistoryId(entry.id);
-      await loadHistoryContent(entry);
-    },
-    [loadHistoryContent]
+    [appendAppLog, selectedHistoryId]
   );
 
   const handleClearHistory = useCallback(async () => {
     if (!window.revoice.clearHistory) {
       setHistory([]);
-      appendLog('履歴をクリアしました。', 'info');
+      appendAppLog('履歴をクリアしました。', 'info');
       return;
     }
     try {
@@ -1003,25 +1019,120 @@ const App = () => {
         setHistoryTotal(0);
         setHistoryCursor(0);
         setHistoryHasMore(false);
-        const removed = typeof response.removed === 'number' ? response.removed : null;
-        appendLog(
-          removed && removed > 0
-            ? `履歴をクリアしました (${removed}件削除)`
-            : '履歴をクリアしました。',
-          'info'
-        );
+        appendAppLog(`履歴をクリアしました (${response.removed ?? 0}件)`, 'info');
       } else {
-        appendLog(`[WARN] 履歴の消去に失敗しました: ${response?.error ?? '不明なエラー'}`, 'error');
+        appendAppLog(`[WARN] 履歴の消去に失敗しました: ${response?.error ?? '不明なエラー'}`, 'error');
       }
     } catch (err) {
-      appendLog(`[WARN] 履歴の消去でエラーが発生しました: ${err}`, 'error');
+      appendAppLog(`[WARN] 履歴の消去でエラーが発生しました: ${err}`, 'error');
     }
-  }, [appendLog]);
+  }, [appendAppLog]);
 
-  const progressLabel = useMemo(() => {
-    if (progress === null) return null;
-    return `${progress.toFixed(1)}%`;
-  }, [progress]);
+  const handleCopyText = useCallback(
+    async (content: string, successMessage: string, emptyMessage?: string) => {
+      if (!content) {
+        if (emptyMessage) appendAppLog(emptyMessage, 'info');
+        return;
+      }
+      if (!navigator?.clipboard?.writeText) {
+        appendAppLog('クリップボード API が利用できません。', 'error');
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(content);
+        appendAppLog(successMessage, 'info');
+      } catch (err) {
+        appendAppLog(`クリップボードへのコピーに失敗しました: ${err}`, 'error');
+      }
+    },
+    [appendAppLog]
+  );
+
+  const handleCopyTranscript = useCallback(() => {
+    if (!activeTab) return;
+    handleCopyText(
+      activeTab.transcript,
+      '文字起こしをクリップボードにコピーしました。',
+      'コピーできる文字起こしがまだありません'
+    );
+  }, [activeTab, handleCopyText]);
+
+  const handleCopyLogs = useCallback(() => {
+    if (!activeTab) return;
+    const body = activeTab.logs.map((entry) => `[${entry.timestamp}] ${entry.message}`).join('\n');
+    handleCopyText(body, 'ログをクリップボードにコピーしました。', 'コピーできるログがまだありません');
+  }, [activeTab, handleCopyText]);
+
+  const handleCopyHistoryTranscript = useCallback(
+    async (entry: HistoryEntry) => {
+      await handleCopyText(
+        entry.transcript,
+        '履歴の文字起こしをコピーしました。',
+        'この履歴にはコピーできる文字起こしがありません'
+      );
+    },
+    [handleCopyText]
+  );
+
+  const handleAddTab = useCallback(async () => {
+    if (tabsRef.current.length >= MAX_VISIBLE_TABS) {
+      appendAppLog(`同時に開けるタブは最大 ${MAX_VISIBLE_TABS} 件です。`, 'error');
+      return;
+    }
+    if (!window.revoice.createTab) return;
+    const title = getNextTabTitle();
+    try {
+      const response = await window.revoice.createTab({ title });
+      if (response?.ok && response.tab) {
+        setTabs((prev) => {
+          if (prev.some((tab) => tab.id === response.tab!.id)) {
+            return prev;
+          }
+          return [...prev, buildTabState(response.tab!, null)];
+        });
+        setActiveTabId(response.tab!.id);
+      } else if (response?.error) {
+        appendAppLog(`タブの作成に失敗しました: ${response.error}`, 'error');
+      }
+    } catch (err) {
+      appendAppLog(`タブの作成でエラーが発生しました: ${err}`, 'error');
+    }
+  }, [appendAppLog, getNextTabTitle]);
+
+  const handleTitleChange = useCallback(
+    async (tabId: string, title: string) => {
+      patchTab(tabId, (tab) => ({ ...tab, title }));
+      try {
+        await window.revoice.updateTab?.({ id: tabId, title });
+      } catch (err) {
+        appendAppLog(`タブ名の更新に失敗しました: ${err}`, 'error');
+      }
+    },
+    [appendAppLog, patchTab]
+  );
+
+  const handleDeleteTab = useCallback(
+    async (tabId: string) => {
+      if (!window.revoice.deleteTab) return;
+      try {
+        const response = await window.revoice.deleteTab(tabId);
+        if (response?.ok) {
+          setTabs((prev) => {
+            const next = prev.filter((tab) => tab.id !== tabId);
+            if (next.length !== prev.length) {
+              setActiveTabId((prevActive) => (prevActive === tabId ? next[0]?.id ?? null : prevActive));
+            }
+            return next;
+          });
+        } else if (response?.error) {
+          appendAppLog(`タブの削除に失敗しました: ${response.error}`, 'error');
+        }
+      } catch (err) {
+        appendAppLog(`タブの削除でエラーが発生しました: ${err}`, 'error');
+      }
+    },
+    [appendAppLog]
+  );
 
   const retentionSettingsPanel = (
     <section className="panel panel--settings">
@@ -1030,9 +1141,7 @@ const App = () => {
         <div className="panel__tools">
           {policyLoading && <span className="policy__loader">読み込み中…</span>}
           {retentionPolicy && !policyLoading && (
-            <span className="policy__badge">
-              {retentionPolicy.mode === 'recommended' ? '推奨プリセット' : 'カスタム設定'}
-            </span>
+            <span className="policy__badge">{retentionPolicy.mode === 'recommended' ? '推奨プリセット' : 'カスタム設定'}</span>
           )}
         </div>
       </header>
@@ -1156,10 +1265,42 @@ const App = () => {
   const renderTranscribe = (
     <div className="transcribe-view">
       <div className="transcribe-tabs">
-        <button type="button" className="transcribe-tabs__button transcribe-tabs__button--active">
-          タブ 1
-        </button>
-        <button type="button" className="transcribe-tabs__button transcribe-tabs__button--add">
+        {tabs.map((tab) => {
+          const isActive = tab.id === activeTabId;
+          return (
+            <div key={tab.id} className={`transcribe-tabs__item ${isActive ? 'transcribe-tabs__item--active' : ''}`}>
+              <button
+                type="button"
+                className={`transcribe-tabs__button ${isActive ? 'transcribe-tabs__button--active' : ''}`}
+                onClick={() => setActiveTabId(tab.id)}
+                aria-pressed={isActive}
+                aria-current={isActive ? 'page' : undefined}
+              >
+                {tab.title}
+              </button>
+              {tabs.length > 1 && (
+                <button
+                  type="button"
+                  className="transcribe-tabs__close"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void handleDeleteTab(tab.id);
+                  }}
+                  aria-label={`${tab.title} を閉じる`}
+                >
+                  <span aria-hidden="true">×</span>
+                </button>
+              )}
+            </div>
+          );
+        })}
+        <button
+          type="button"
+          className="transcribe-tabs__button transcribe-tabs__button--add"
+          onClick={handleAddTab}
+          disabled={tabs.length >= MAX_VISIBLE_TABS}
+          aria-label="タブを追加"
+        >
           ＋
         </button>
       </div>
@@ -1172,7 +1313,12 @@ const App = () => {
               key={style}
               type="button"
               className={`output-style__button ${outputStyle === style ? 'output-style__button--active' : ''}`}
-              onClick={() => handleOutputStyleChange(style)}
+              onClick={() => {
+                setOutputStyle(style);
+                window.revoice.setTranscriptionDefaults?.({ outputStyle: style }).catch((err) => {
+                  appendAppLog(`[WARN] 出力スタイルの保存に失敗しました: ${err}`, 'error', activeTabId);
+                });
+              }}
               disabled={outputStyleLoading}
             >
               {OUTPUT_STYLE_LABELS[style]}
@@ -1187,53 +1333,72 @@ const App = () => {
           <h2>ファイルを追加</h2>
           <span className="panel__hint">対応形式: wav / mp3 / mp4 / mov など</span>
         </header>
-        <div className={`dropzone ${inputPath ? 'dropzone--selected' : ''}`}>
-          <div className="dropzone__path">{inputPath || 'ファイルをドラッグ&ドロップ、またはボタンから選択してください'}</div>
-          <button type="button" className="button button--primary" onClick={handleBrowse} disabled={disabled}>
+        <div className={`dropzone ${activeTab?.inputPath ? 'dropzone--selected' : ''}`}>
+          <div className="dropzone__path">
+            {activeTab?.inputPath || 'ファイルをドラッグ&ドロップ、またはボタンから選択してください'}
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".wav,.mp3,.m4a,.aac,.flac,.ogg,.mp4,.mov,.mkv"
+            className="sr-only"
+            onChange={handleNativeFileChange}
+          />
+          <button type="button" className="button button--primary" onClick={handleBrowse} disabled={!activeTab}>
             ファイルを選ぶ
           </button>
         </div>
         <div className="panel__actions">
-          <button type="button" className="button button--primary" onClick={handleStart} disabled={disabled || !inputPath}>
-            {status === 'running' ? '解析中…' : '文字起こしを開始'}
+          <button type="button" className="button button--primary" onClick={handleStart} disabled={startDisabled || tabsLoading}>
+            {activeTab?.status === 'queued' ? '待機中…' : activeTab?.status === 'running' ? '解析中…' : '文字起こしを開始'}
           </button>
-          <button type="button" className="button button--outline" onClick={handleCancel} disabled={!pid}>
-            強制停止
+          <button type="button" className="button button--outline" onClick={handleCancel} disabled={!activeTab || !activeTab.jobId}>
+            キャンセル
           </button>
-          <button type="button" className="button button--subtle" onClick={handleReset} disabled={status === 'running'}>
+          <button type="button" className="button button--subtle" onClick={handleReset} disabled={!activeTab}>
             リセット
           </button>
         </div>
         <div className="run-status">
-          {pid && <span>実行中の PID: {pid}</span>}
-          {outputPath && <span>出力ファイル: {outputPath}</span>}
-          {errorMessage && <span className="run-status__error">{errorMessage}</span>}
+          {activeTab?.queuePosition && activeTab.queuePosition > 0 && (
+            <span>待機順: {activeTab.queuePosition}</span>
+          )}
+          {activeTab?.pid && <span>PID: {activeTab.pid}</span>}
+          {activeTab?.outputPath && <span>出力ファイル: {activeTab.outputPath}</span>}
+          {activeTab?.errorMessage && <span className="run-status__error">{activeTab.errorMessage}</span>}
         </div>
-        {progress !== null && (
-          <div className="progress">
-            <div className="progress__track">
-              <div className="progress__bar" style={{ width: `${Math.min(progress, 100)}%` }} />
+        {(() => {
+          const progressValue = activeTab?.progress;
+          if (progressValue === null || progressValue === undefined) return null;
+          const clamped = Math.min(Math.max(progressValue, 0), 100);
+          return (
+            <div className="progress">
+              <div className="progress__track">
+                <div className="progress__bar" style={{ width: `${clamped}%` }} />
+              </div>
+              <span className="progress__label">{clamped.toFixed(1)}%</span>
             </div>
-            <span className="progress__label">{progressLabel}</span>
-          </div>
-        )}
+          );
+        })()}
       </section>
 
       <section className="panel panel--transcript">
         <header className="panel__header">
           <h2>文字起こし結果</h2>
           <div className="panel__tools">
-            <button type="button" className="button button--ghost button--small" onClick={handleCopyTranscript}>
+            <button type="button" className="button button--ghost button--small" onClick={handleCopyTranscript} disabled={!activeTab || !activeTab.transcript}>
               コピー
             </button>
           </div>
         </header>
         <div className="transcript">
-          {transcript ? (
-            <pre className="transcript__body">{transcript}</pre>
+          {activeTab?.transcript ? (
+            <pre className="transcript__body">{activeTab.transcript}</pre>
           ) : (
             <div className="transcript__placeholder">
-              {status === 'running' ? '解析中です…' : '解析が完了すると、ここに結果が表示されます。'}
+              {activeTab?.status === 'running'
+                ? '解析中です…'
+                : '解析が完了すると、ここに結果が表示されます。'}
             </div>
           )}
         </div>
@@ -1263,7 +1428,7 @@ const App = () => {
               {history.map((entry) => {
                 const active = entry.id === selectedHistoryId;
                 return (
-                  <li key={entry.id}>
+                  <li key={entry.id} className="history-list__entry">
                     <button
                       type="button"
                       className={`history-list__item ${active ? 'history-list__item--active' : ''}`}
@@ -1278,10 +1443,23 @@ const App = () => {
                             ? '完了'
                             : entry.status === 'failed'
                             ? '失敗'
+                            : entry.status === 'cancelled'
+                            ? 'キャンセル'
                             : entry.status}
                         </span>
                       )}
                       <span className="history-list__time">{formatHistoryTime(entry.finishedAt)}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="history-list__delete"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void handleDeleteHistory(entry);
+                      }}
+                    >
+                      <IconTrash aria-hidden="true" />
+                      <span className="sr-only">履歴を削除</span>
                     </button>
                   </li>
                 );
@@ -1299,7 +1477,7 @@ const App = () => {
             )}
           </div>
           <div className="history-detail">
-            {selectedHistory ? (
+            {historyHasSelection && selectedHistory ? (
               <>
                 <div className="history-detail__header">
                   <div className="history-detail__header-main">
@@ -1311,6 +1489,8 @@ const App = () => {
                             ? '完了'
                             : selectedHistory.status === 'failed'
                             ? '失敗'
+                            : selectedHistory.status === 'cancelled'
+                            ? 'キャンセル'
                             : selectedHistory.status}
                         </span>
                       )}
@@ -1325,8 +1505,8 @@ const App = () => {
                         void handleSelectHistory(selectedHistory);
                       }}
                     >
-                      <IconEye />
-                      <span className="sr-only">内容を読み込む</span>
+                      <IconRefresh aria-hidden="true" />
+                      <span className="sr-only">内容を再読み込み</span>
                     </button>
                     <button
                       type="button"
@@ -1335,7 +1515,7 @@ const App = () => {
                         void handleCopyHistoryTranscript(selectedHistory);
                       }}
                     >
-                      <IconCopy />
+                      <IconCopy aria-hidden="true" />
                       <span className="sr-only">文字起こしをコピー</span>
                     </button>
                     <button
@@ -1345,7 +1525,7 @@ const App = () => {
                         void handleDeleteHistory(selectedHistory);
                       }}
                     >
-                      <IconTrash />
+                      <IconTrash aria-hidden="true" />
                       <span className="sr-only">削除</span>
                     </button>
                   </div>
@@ -1373,16 +1553,16 @@ const App = () => {
         <header className="panel__header">
           <h2>ログ</h2>
           <div className="panel__tools">
-            <button type="button" className="button button--ghost button--small" onClick={handleCopyLogs}>
+            <button type="button" className="button button--ghost button--small" onClick={handleCopyLogs} disabled={!activeTab || activeTab.logs.length === 0}>
               コピー
             </button>
           </div>
         </header>
-        <div className="log log--full" ref={logContainerRef}>
-          {logs.length === 0 ? (
+        <div className="log log--full">
+          {!activeTab || activeTab.logs.length === 0 ? (
             <div className="log__placeholder">処理の進行状況がここに表示されます。</div>
           ) : (
-            logs.map((entry) => (
+            activeTab.logs.map((entry) => (
               <div key={entry.id} className={`log__line log__line--${entry.level}`}>
                 <span className="log__time">[{entry.timestamp}]</span>
                 <span className="log__message">{entry.message}</span>
@@ -1406,39 +1586,33 @@ const App = () => {
     </div>
   );
 
-  let mainContent: JSX.Element;
-  switch (activePage) {
-    case 'vtt-transcribe':
-      mainContent = renderTranscribe;
-      break;
-    case 'vtt-history':
-      mainContent = renderHistory;
-      break;
-    case 'vtt-logs':
-      mainContent = renderLogs;
-      break;
-    case 'settings-vtt':
-      mainContent = <div className="settings-view">{retentionSettingsPanel}</div>;
-      break;
-    case 'mtv-convert':
-      mainContent = renderPlaceholder('Movie to Voice - 変換', '映像から音声への変換ワークフローをここに追加予定です。');
-      break;
-    case 'mtv-logs':
-      mainContent = renderPlaceholder('Movie to Voice - ログ', '変換処理のログは今後ここに表示されます。');
-      break;
-    case 'settings-mtv':
-      mainContent = renderPlaceholder('Movie to Voice の設定', '現在準備中です。');
-      break;
-    default:
-      mainContent = renderPlaceholder('準備中', '今後のアップデートをお待ちください。');
-  }
+  const mainContent = useMemo(() => {
+    switch (activePage) {
+      case 'vtt-transcribe':
+        return renderTranscribe;
+      case 'vtt-history':
+        return renderHistory;
+      case 'vtt-logs':
+        return renderLogs;
+      case 'settings-vtt':
+        return <div className="settings-view">{retentionSettingsPanel}</div>;
+      case 'mtv-convert':
+        return renderPlaceholder('Movie to Voice - 変換', '映像から音声への変換ワークフローをここに追加予定です。');
+      case 'mtv-logs':
+        return renderPlaceholder('Movie to Voice - ログ', '変換処理のログは今後ここに表示されます。');
+      case 'settings-mtv':
+        return renderPlaceholder('Movie to Voice の設定', '現在準備中です。');
+      default:
+        return renderPlaceholder('準備中', '今後のアップデートをお待ちください。');
+    }
+  }, [activePage, renderHistory, renderLogs, renderTranscribe, retentionSettingsPanel]);
 
   const navGroups: {
     title: string;
-    items: { key: ActivePage; label: string }[];
+    items: { key: typeof activePage; label: string }[];
   }[] = [
     {
-      title: 'Voice to Text',
+      title: '動画音声→テキスト',
       items: [
         { key: 'vtt-transcribe', label: '文字起こし' },
         { key: 'vtt-history', label: '履歴' },
@@ -1446,7 +1620,7 @@ const App = () => {
       ],
     },
     {
-      title: 'Movie to Voice',
+      title: '動画→音声',
       items: [
         { key: 'mtv-convert', label: '変換' },
         { key: 'mtv-logs', label: 'ログ' },
@@ -1464,7 +1638,9 @@ const App = () => {
   return (
     <div className="app-shell">
       <aside className="app-shell__sidebar">
-        <div className="sidebar__brand">Revoice</div>
+        <div className="sidebar__brand">
+          <img className="sidebar__brand-logo" src={revoiceLogo} alt="Revoice" />
+        </div>
         <nav className="sidebar__groups">
           {navGroups.map((group) => (
             <div key={group.title} className="sidebar__group">
@@ -1478,6 +1654,7 @@ const App = () => {
                         type="button"
                         className={`sidebar__nav-button ${active ? 'sidebar__nav-button--active' : ''}`}
                         onClick={() => setActivePage(item.key)}
+                        aria-current={active ? 'page' : undefined}
                       >
                         <span className={`sidebar__nav-marker ${active ? 'sidebar__nav-marker--active' : ''}`} />
                         <span className="sidebar__nav-label">{item.label}</span>
@@ -1489,13 +1666,43 @@ const App = () => {
             </div>
           ))}
         </nav>
-        <div className="sidebar__foot">
-          <span className="sidebar__status-label">現行ステータス</span>
-          <span className={`sidebar__status-value sidebar__status-value--${status}`}>{statusLabel}</span>
-        </div>
       </aside>
 
-      <main className="app-shell__main">{mainContent}</main>
+      <main className="app-shell__main">
+        <div className="main-header">
+          <div className="main-header__titles">
+            <h1 className="main-header__title">
+              {(() => {
+                switch (activePage) {
+                  case 'vtt-transcribe':
+                    return '文字起こし';
+                  case 'vtt-history':
+                    return '履歴';
+                  case 'vtt-logs':
+                    return 'ログ';
+                  case 'settings-vtt':
+                    return 'Voice to textの設定';
+                  case 'mtv-convert':
+                    return 'Movie to Voice - 変換';
+                  case 'mtv-logs':
+                    return 'Movie to Voice - ログ';
+                  case 'settings-mtv':
+                    return 'Movie to Voiceの設定';
+                  default:
+                    return 'Revoice';
+                }
+              })()}
+            </h1>
+          </div>
+          <div className="main-header__controls">
+            <div className={`status-pill status-pill--${statusPillClass}`}>
+              <span className="status-pill__label">STATUS</span>
+              <span className="status-pill__value">{statusLabel}</span>
+            </div>
+          </div>
+        </div>
+        {mainContent}
+      </main>
     </div>
   );
 };

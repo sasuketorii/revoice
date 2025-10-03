@@ -1,25 +1,55 @@
-export type TranscriptionPayload = {
+export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export type JobSummary = {
+  id: string;
+  tabId: string | null;
+  status: JobStatus;
+  type: string | null;
+  inputPath: string | null;
+  outputPath: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  progress: number | null;
+  queuePosition: number | null;
+  pid: number | null;
+  error: string | null;
+  transcript: string | null;
+};
+
+export type JobEventMessage =
+  | { kind: 'updated'; job: JobSummary }
+  | { kind: 'log'; jobId: string; message: string; level: 'info' | 'error'; createdAt: string };
+
+export type TabSummary = {
+  id: string;
+  title: string;
+  jobId: string | null;
+  state: string | null;
+  meta: Record<string, unknown> | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  lastOpenedAt: string | null;
+};
+
+export type TranscriptionJobPayload = {
   inputPath: string;
-  outputDir: string;
-  model: string;
-  language: string;
-  beamSize: number;
-  computeType: string;
+  tabId: string;
+  tabTitle?: string;
+  outputDir?: string;
+  model?: string;
+  language?: string;
+  beamSize?: number;
+  computeType?: string;
   initialPrompt?: string;
-  outputStyle: 'timestamps' | 'plain';
+  outputStyle?: 'timestamps' | 'plain';
   formats?: string;
   replace?: string;
   noVad?: boolean;
   minSegment?: number;
   preset?: string;
   memo?: boolean;
-};
-
-type DoneEvent = {
-  ok: boolean;
-  code?: number;
-  outputPath?: string | null;
-  transcript?: string | null;
 };
 
 export type HistoryRecord = {
@@ -53,12 +83,10 @@ type ListenerDisposer = () => void;
 
 export type RevoiceBridge = {
   openFileDialog: () => Promise<string | null>;
-  startTranscription: (payload: TranscriptionPayload) => void;
-  onLog: (cb: (msg: string) => void) => ListenerDisposer | void;
-  onPid: (cb: (pid: number) => void) => ListenerDisposer | void;
-  onDone: (cb: (event: DoneEvent) => void) => ListenerDisposer | void;
-  onError: (cb: (error: string) => void) => ListenerDisposer | void;
-  kill: (pid: number) => void;
+  enqueueJob: (payload: TranscriptionJobPayload) => Promise<{ ok: boolean; job?: JobSummary; error?: string }>;
+  listJobs: () => Promise<{ ok: boolean; jobs?: JobSummary[]; error?: string }>;
+  cancelJob: (jobId: string) => Promise<{ ok: boolean; error?: string }>;
+  onJobEvent: (cb: (event: JobEventMessage) => void) => ListenerDisposer | void;
   readTextFile: (path: string) => Promise<string>;
   listHistory: (options?: { limit?: number; offset?: number }) => Promise<
     { ok: true; items: HistoryRecord[]; total: number; limit: number; offset: number } |
@@ -88,6 +116,14 @@ export type RevoiceBridge = {
   setTranscriptionDefaults: (
     payload: { outputStyle: 'timestamps' | 'plain' }
   ) => Promise<{ ok: boolean; outputStyle?: 'timestamps' | 'plain'; error?: string }>;
+  listTabs: () => Promise<{ ok: boolean; tabs?: TabSummary[]; error?: string }>;
+  createTab: (payload: { title?: string }) => Promise<{ ok: boolean; tab?: TabSummary; error?: string }>;
+  updateTab: (
+    payload: Partial<TabSummary> & { id: string }
+  ) => Promise<{ ok: boolean; tab?: TabSummary; error?: string }>;
+  deleteTab: (tabId: string) => Promise<{ ok: boolean; removed?: number; error?: string }>;
+  onTabEvent: (cb: (event: { kind: 'updated'; tab: TabSummary } | { kind: 'removed'; tabId: string }) => void) =>
+    ListenerDisposer | void;
 };
 
 declare global {

@@ -10,12 +10,10 @@ const register = (channel, mapper) => (cb) => {
 
 contextBridge.exposeInMainWorld('revoice', {
   openFileDialog: () => ipcRenderer.invoke('dialog:openFile'),
-  startTranscription: (payload) => ipcRenderer.send('transcribe:start', payload),
-  onLog: register('transcribe:log'),
-  onPid: register('transcribe:pid'),
-  onDone: register('transcribe:done'),
-  onError: register('transcribe:error'),
-  kill: (pid) => ipcRenderer.send('process:kill', pid),
+  enqueueJob: (payload) => ipcRenderer.invoke('jobs:enqueue', payload),
+  listJobs: () => ipcRenderer.invoke('jobs:list'),
+  cancelJob: (jobId) => ipcRenderer.invoke('jobs:cancel', jobId),
+  onJobEvent: register('jobs:event'),
   readTextFile: (targetPath) => ipcRenderer.invoke('file:readText', targetPath),
   listHistory: (options) => ipcRenderer.invoke('history:list', options),
   getHistoryDetail: (id) => ipcRenderer.invoke('history:detail', id),
@@ -29,4 +27,9 @@ contextBridge.exposeInMainWorld('revoice', {
   setRetentionPolicy: (policy) => ipcRenderer.invoke('settings:retention:set', policy),
   getTranscriptionDefaults: () => ipcRenderer.invoke('settings:transcription:get'),
   setTranscriptionDefaults: (payload) => ipcRenderer.invoke('settings:transcription:set', payload),
+  listTabs: () => ipcRenderer.invoke('tabs:list'),
+  createTab: (payload) => ipcRenderer.invoke('tabs:create', payload),
+  updateTab: (payload) => ipcRenderer.invoke('tabs:update', payload),
+  deleteTab: (tabId) => ipcRenderer.invoke('tabs:delete', tabId),
+  onTabEvent: register('tabs:event'),
 });
