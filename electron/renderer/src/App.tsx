@@ -99,6 +99,8 @@ const STATUS_PILL_CLASS: Record<JobStatus | 'idle', string> = {
   cancelled: 'error',
 };
 
+const GPTS_URL = 'https://chatgpt.com/g/g-68df6cd0042c8191a2e8adf4717400b0-revoice-supporter';
+
 const revoiceLogo = new URL('./assets/revoice-logo.png', import.meta.url).href;
 
 const IconRefresh = (props: SVGProps<SVGSVGElement>) => (
@@ -124,6 +126,15 @@ const IconTrash = (props: SVGProps<SVGSVGElement>) => (
     <path d="M10 11v6" />
     <path d="M14 11v6" />
     <path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2" />
+  </svg>
+);
+
+const IconLaunch = (props: SVGProps<SVGSVGElement>) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <path d="M5 12V5a2 2 0 0 1 2-2h7" />
+    <path d="M5 19a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7" />
+    <path d="M12 12l10-10" />
+    <path d="M15 2h7v7" />
   </svg>
 );
 
@@ -293,6 +304,7 @@ const App = () => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const tabsRef = useRef<TabState[]>([]);
   const activeTabIdRef = useRef<string | null>(null);
+  const [gptsSending, setGptsSending] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     tabsRef.current = tabs;
@@ -326,6 +338,12 @@ const App = () => {
     if (selectedHistoryId === null) return null;
     return history.find((entry) => entry.id === selectedHistoryId) ?? null;
   }, [history, selectedHistoryId]);
+
+  const activeTabGptsSending = useMemo(() => (activeTab ? Boolean(gptsSending[`tab:${activeTab.id}`]) : false), [activeTab, gptsSending]);
+  const historyGptsSending = useMemo(
+    () => (selectedHistory ? Boolean(gptsSending[`history:${selectedHistory.id}`]) : false),
+    [selectedHistory, gptsSending]
+  );
 
   const patchTab = useCallback((tabId: string, updater: (tab: TabState) => TabState) => {
     setTabs((prev) => prev.map((tab) => (tab.id === tabId ? updater(tab) : tab)));
@@ -367,6 +385,20 @@ const App = () => {
     },
     []
   );
+
+  const markGptsSending = useCallback((key: string, value: boolean) => {
+    setGptsSending((prev) => {
+      if (value) {
+        return { ...prev, [key]: true };
+      }
+      if (!prev[key]) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }, []);
 
   const getNextTabTitle = useCallback(() => {
     const numbers = tabsRef.current
@@ -420,6 +452,54 @@ const App = () => {
       }
     },
     [appendAppLog]
+  );
+
+  const handleSendToGPTs = useCallback(
+    async ({ transcript, contextKey, logTabId }: { transcript: string; contextKey: string; logTabId?: string | null }) => {
+      const trimmed = transcript?.trim();
+      if (!trimmed) {
+        if (logTabId) {
+          appendTabLog(logTabId, 'GPTsに送信できる文字起こしがありません。', 'error');
+        } else {
+          appendAppLog('GPTsに送信できる文字起こしがありません。', 'error');
+        }
+        return;
+      }
+      if (!window.revoice?.copyToClipboard || !window.revoice?.openExternal) {
+        if (logTabId) {
+          appendTabLog(logTabId, 'GPTs連携はこのビルドでは利用できません。', 'error');
+        } else {
+          appendAppLog('GPTs連携はこのビルドでは利用できません。', 'error');
+        }
+        return;
+      }
+      markGptsSending(contextKey, true);
+      try {
+        const copyResult = await window.revoice.copyToClipboard(trimmed);
+        if (!copyResult?.ok) {
+          throw new Error(copyResult?.error ?? 'copy failed');
+        }
+        if (logTabId) {
+          appendTabLog(logTabId, '[SYSTEM] GPTs用に文字起こしをコピーしました。', 'info');
+        } else {
+          appendAppLog('[SYSTEM] GPTs用に文字起こしをコピーしました。', 'info');
+        }
+        const openResult = await window.revoice.openExternal(GPTS_URL);
+        if (!openResult?.ok) {
+          throw new Error(openResult?.error ?? 'open failed');
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (logTabId) {
+          appendTabLog(logTabId, `[ERROR] GPTs連携に失敗しました: ${message}`, 'error');
+        } else {
+          appendAppLog(`[ERROR] GPTs連携に失敗しました: ${message}`, 'error');
+        }
+      } finally {
+        markGptsSending(contextKey, false);
+      }
+    },
+    [appendAppLog, appendTabLog, markGptsSending]
   );
 
   useEffect(() => {
@@ -1389,6 +1469,18 @@ const App = () => {
             <button type="button" className="button button--ghost button--small" onClick={handleCopyTranscript} disabled={!activeTab || !activeTab.transcript}>
               コピー
             </button>
+            <button
+              type="button"
+              className="button button--ghost button--small"
+              onClick={() => {
+                if (activeTab) {
+                  void handleSendToGPTs({ transcript: activeTab.transcript, contextKey: `tab:${activeTab.id}`, logTabId: activeTab.id });
+                }
+              }}
+              disabled={!activeTab || !activeTab.transcript || activeTabGptsSending}
+            >
+              {activeTabGptsSending ? 'GPTs起動中…' : 'GPTsで開く'}
+            </button>
           </div>
         </header>
         <div className="transcript">
@@ -1507,6 +1599,23 @@ const App = () => {
                     >
                       <IconRefresh aria-hidden="true" />
                       <span className="sr-only">内容を再読み込み</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      onClick={() => {
+                        if (selectedHistory?.transcript) {
+                          void handleSendToGPTs({
+                            transcript: selectedHistory.transcript,
+                            contextKey: `history:${selectedHistory.id}`,
+                            logTabId: activeTab?.id ?? null,
+                          });
+                        }
+                      }}
+                      disabled={historyGptsSending || !selectedHistory?.transcript}
+                    >
+                      {historyGptsSending ? <span className="icon-button__glyph" aria-hidden="true">…</span> : <IconLaunch aria-hidden="true" />}
+                      <span className="sr-only">GPTsで開く</span>
                     </button>
                     <button
                       type="button"

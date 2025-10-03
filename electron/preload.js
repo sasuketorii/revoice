@@ -32,4 +32,6 @@ contextBridge.exposeInMainWorld('revoice', {
   updateTab: (payload) => ipcRenderer.invoke('tabs:update', payload),
   deleteTab: (tabId) => ipcRenderer.invoke('tabs:delete', tabId),
   onTabEvent: register('tabs:event'),
+  copyToClipboard: (text) => ipcRenderer.invoke('system:clipboard:write', text),
+  openExternal: (url) => ipcRenderer.invoke('system:openExternal', url),
 });

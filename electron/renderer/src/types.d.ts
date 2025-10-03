@@ -124,6 +124,8 @@ export type RevoiceBridge = {
   deleteTab: (tabId: string) => Promise<{ ok: boolean; removed?: number; error?: string }>;
   onTabEvent: (cb: (event: { kind: 'updated'; tab: TabSummary } | { kind: 'removed'; tabId: string }) => void) =>
     ListenerDisposer | void;
+  copyToClipboard: (text: string) => Promise<{ ok: boolean; error?: string }>;
+  openExternal: (url: string) => Promise<{ ok: boolean; error?: string }>;
 };
 
 declare global {

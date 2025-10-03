@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -17,6 +17,8 @@ const jobStore = new Map();
 const runningJobs = new Map();
 const jobQueue = [];
 const tabStore = new Map();
+
+const GPTS_URL = 'https://chatgpt.com/g/g-68df6cd0042c8191a2e8adf4717400b0-revoice-supporter';
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 
@@ -694,6 +696,11 @@ const finalizeJob = (job, exitCode, transcriptHint) => {
     outputPath: job.outputPath,
     error: job.error,
     updatedAt: finishedAt,
+    metadata: {
+      ...(job.metadata ?? {}),
+      transcript: job.transcript ?? null,
+      outputPath: job.outputPath ?? null,
+    },
   });
   historyStorage.appendJobEvent({ jobId: job.id, event: job.status, payload: { exitCode } });
   if (job.tabId) {
@@ -810,6 +817,27 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+ipcMain.handle('system:clipboard:write', async (_event, text) => {
+  try {
+    const content = typeof text === 'string' ? text : '';
+    clipboard.writeText(content);
+    return { ok: true };
+  } catch (err) {
+    console.error('clipboard write failed', err);
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+});
+
+ipcMain.handle('system:openExternal', async () => {
+  try {
+    await shell.openExternal(GPTS_URL);
+    return { ok: true };
+  } catch (err) {
+    console.error('openExternal failed', err);
+    return { ok: false, error: err?.message ?? String(err) };
+  }
 });
 
 ipcMain.handle('dialog:openFile', async () => {
