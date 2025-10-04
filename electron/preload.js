@@ -34,4 +34,12 @@ contextBridge.exposeInMainWorld('revoice', {
   onTabEvent: register('tabs:event'),
   copyToClipboard: (text) => ipcRenderer.invoke('system:clipboard:write', text),
   openExternal: (url) => ipcRenderer.invoke('system:openExternal', url),
+  enqueueConversion: (payload) => ipcRenderer.invoke('conversion:enqueue', payload),
+  listConversionJobs: () => ipcRenderer.invoke('conversion:list'),
+  cancelConversionJob: (jobId) => ipcRenderer.invoke('conversion:cancel', jobId),
+  listConversionHistory: (options) => ipcRenderer.invoke('conversion:history', options),
+  linkConversionTranscription: (conversionJobId, transcriptionJobId) =>
+    ipcRenderer.invoke('conversion:link', { conversionJobId, transcriptionJobId }),
+  getConversionSettings: () => ipcRenderer.invoke('conversion:settings:get'),
+  setConversionSettings: (payload) => ipcRenderer.invoke('conversion:settings:set', payload),
 });

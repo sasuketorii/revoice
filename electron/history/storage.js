@@ -29,6 +29,27 @@ const DEFAULT_RETENTION_POLICY = Object.freeze({
   },
 });
 
+const DEFAULT_CONVERSION_PRESET = Object.freeze({
+  format: 'aac',
+  bitrateKbps: 128,
+  sampleRate: 16000,
+  channels: 1,
+});
+
+const DEFAULT_CONVERSION_SETTINGS = Object.freeze({
+  outputDir: null,
+  defaultPreset: DEFAULT_CONVERSION_PRESET,
+  maxParallelJobs: 2,
+  autoCreateTranscribeTab: false,
+  ffmpegPath: null,
+});
+
+const CONVERSION_FORMATS = new Set(['aac', 'flac', 'ogg', 'wav']);
+const CONVERSION_SAMPLE_RATES = new Set([16000, 24000, 44100]);
+const CONVERSION_CHANNELS = new Set([1, 2]);
+const CONVERSION_BITRATES = new Set([64, 128, 192]);
+const CONVERSION_SETTINGS_KEY = 'conversion';
+
 const normalizePositiveInteger = (value) => {
   if (value === null || value === undefined) return null;
   const numeric = Number(value);
@@ -79,6 +100,87 @@ const normalizeRetentionPolicy = (raw) => {
       intervalHours: scheduleType === 'startup' ? null : intervalHours,
     },
   };
+};
+
+const normalizeConversionBoolean = (value, fallback) => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const lowered = value.trim().toLowerCase();
+    if (lowered === 'true') return true;
+    if (lowered === 'false') return false;
+  }
+  return fallback;
+};
+
+const normalizeConversionPreset = (raw) => {
+  const base = {
+    format: DEFAULT_CONVERSION_PRESET.format,
+    bitrateKbps: DEFAULT_CONVERSION_PRESET.bitrateKbps,
+    sampleRate: DEFAULT_CONVERSION_PRESET.sampleRate,
+    channels: DEFAULT_CONVERSION_PRESET.channels,
+  };
+  if (!raw || typeof raw !== 'object') {
+    return base;
+  }
+
+  if (typeof raw.format === 'string') {
+    const next = raw.format.trim().toLowerCase();
+    if (CONVERSION_FORMATS.has(next)) {
+      base.format = next;
+    }
+  }
+
+  const bitrate = Number(raw.bitrateKbps);
+  if (Number.isFinite(bitrate) && CONVERSION_BITRATES.has(Math.floor(bitrate))) {
+    base.bitrateKbps = Math.floor(bitrate);
+  }
+
+  const sampleRate = Number(raw.sampleRate);
+  if (Number.isFinite(sampleRate) && CONVERSION_SAMPLE_RATES.has(Math.floor(sampleRate))) {
+    base.sampleRate = Math.floor(sampleRate);
+  }
+
+  const channels = Number(raw.channels);
+  if (Number.isFinite(channels) && CONVERSION_CHANNELS.has(Math.floor(channels))) {
+    base.channels = Math.floor(channels);
+  }
+
+  return base;
+};
+
+const normalizeConversionSettings = (raw) => {
+  const base = {
+    outputDir: null,
+    defaultPreset: normalizeConversionPreset(raw?.defaultPreset),
+    maxParallelJobs: DEFAULT_CONVERSION_SETTINGS.maxParallelJobs,
+    autoCreateTranscribeTab: DEFAULT_CONVERSION_SETTINGS.autoCreateTranscribeTab,
+    ffmpegPath: DEFAULT_CONVERSION_SETTINGS.ffmpegPath,
+  };
+
+  if (raw && typeof raw === 'object') {
+    if (typeof raw.outputDir === 'string') {
+      const trimmed = raw.outputDir.trim();
+      base.outputDir = trimmed.length > 0 ? trimmed : null;
+    }
+
+    const maxParallel = Number(raw.maxParallelJobs);
+    if (Number.isFinite(maxParallel)) {
+      const normalized = Math.max(1, Math.min(8, Math.floor(maxParallel)));
+      base.maxParallelJobs = normalized;
+    }
+
+    base.autoCreateTranscribeTab = normalizeConversionBoolean(
+      raw.autoCreateTranscribeTab,
+      DEFAULT_CONVERSION_SETTINGS.autoCreateTranscribeTab
+    );
+
+    if (typeof raw.ffmpegPath === 'string') {
+      const trimmedPath = raw.ffmpegPath.trim();
+      base.ffmpegPath = trimmedPath.length > 0 ? trimmedPath : null;
+    }
+  }
+
+  return base;
 };
 
 const resolveUserDataDir = (app) => {
@@ -227,6 +329,35 @@ const generatePreview = (text) => {
   return `${trimmed.slice(0, PREVIEW_MAX_LENGTH)}…`;
 };
 
+const normalizeHistoryNotes = (notes) => {
+  if (notes === null || notes === undefined) return null;
+  if (typeof notes === 'string') {
+    const trimmed = notes.trim();
+    if (!trimmed) return null;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object') {
+        return JSON.stringify(parsed);
+      }
+      return JSON.stringify({ message: parsed });
+    } catch (_) {
+      return JSON.stringify({ message: trimmed });
+    }
+    return JSON.stringify({ message: trimmed });
+  }
+  if (typeof notes === 'object') {
+    try {
+      return JSON.stringify(notes);
+    } catch (_) {
+      return null;
+    }
+  }
+  if (typeof notes === 'number' || typeof notes === 'boolean') {
+    return JSON.stringify({ message: String(notes) });
+  }
+  return JSON.stringify({ message: String(notes) });
+};
+
 const recordFromRow = (row) => {
   if (!row) return null;
   return {
@@ -299,6 +430,17 @@ const setRetentionPolicy = (policy) => {
   return normalized;
 };
 
+const getConversionSettings = () => {
+  const raw = getSetting(CONVERSION_SETTINGS_KEY);
+  return normalizeConversionSettings(raw);
+};
+
+const setConversionSettings = (payload) => {
+  const normalized = normalizeConversionSettings(payload);
+  setSetting(CONVERSION_SETTINGS_KEY, normalized);
+  return normalized;
+};
+
 const OUTPUT_STYLE_OPTIONS = new Set(['timestamps', 'plain']);
 
 const getTranscriptionOutputStyle = () => {
@@ -334,6 +476,7 @@ const storeTranscription = (entry) => {
   `);
 
   const transcriptPreview = entry.transcriptPreview ?? generatePreview(entry.transcript ?? entry.transcriptPreview ?? '');
+  const normalizedNotes = normalizeHistoryNotes(entry.notes);
 
   const runResult = stmt.run({
     inputPath: entry.inputPath ?? null,
@@ -344,7 +487,7 @@ const storeTranscription = (entry) => {
     createdAt: now,
     duration: typeof entry.duration === 'number' ? entry.duration : null,
     status: entry.status ?? 'completed',
-    notes: entry.notes ?? null,
+    notes: normalizedNotes,
     transcriptFull: entry.transcript ?? null,
   });
 
@@ -358,7 +501,7 @@ const storeTranscription = (entry) => {
     createdAt: now,
     duration: typeof entry.duration === 'number' ? entry.duration : null,
     status: entry.status ?? 'completed',
-    notes: entry.notes ?? null,
+    notes: normalizedNotes,
     transcriptFull: entry.transcript ?? null,
   };
 };
@@ -611,7 +754,7 @@ const updateJobRecord = (id, patch = {}) => {
   return getJobRecord(id);
 };
 
-const listJobs = ({ limit = 100, offset = 0, status = null } = {}) => {
+const listJobs = ({ limit = 100, offset = 0, status = null, type = null, order = 'asc' } = {}) => {
   const db = ensureInitialized();
   const baseQuery = `
     SELECT
@@ -631,11 +774,37 @@ const listJobs = ({ limit = 100, offset = 0, status = null } = {}) => {
       metadata
     FROM jobs
   `;
-  let sql = `${baseQuery} ORDER BY datetime(created_at) ASC LIMIT @limit OFFSET @offset`;
+  const clauses = [];
   if (status && JOB_STATUS_OPTIONS.has(status)) {
-    sql = `${baseQuery} WHERE status = @status ORDER BY datetime(created_at) ASC LIMIT @limit OFFSET @offset`;
+    clauses.push('status = @status');
   }
-  return db.prepare(sql).all({ status, limit, offset }).map(jobFromRow);
+  if (typeof type === 'string') {
+    clauses.push('type = @type');
+  }
+  const orderDir = String(order).toLowerCase() === 'desc' ? 'DESC' : 'ASC';
+  let sql = baseQuery;
+  if (clauses.length > 0) {
+    sql += ` WHERE ${clauses.join(' AND ')}`;
+  }
+  sql += ` ORDER BY datetime(created_at) ${orderDir}, id ${orderDir} LIMIT @limit OFFSET @offset`;
+  return db.prepare(sql).all({ status, type, limit, offset }).map(jobFromRow);
+};
+
+const countJobs = ({ status = null, type = null } = {}) => {
+  const db = ensureInitialized();
+  const clauses = [];
+  if (status && JOB_STATUS_OPTIONS.has(status)) {
+    clauses.push('status = @status');
+  }
+  if (typeof type === 'string') {
+    clauses.push('type = @type');
+  }
+  let sql = 'SELECT COUNT(*) AS total FROM jobs';
+  if (clauses.length > 0) {
+    sql += ` WHERE ${clauses.join(' AND ')}`;
+  }
+  const row = db.prepare(sql).get({ status, type });
+  return Number(row?.total ?? 0);
 };
 
 const deleteJobRecord = (id) => {
@@ -803,6 +972,9 @@ module.exports = {
   setSetting,
   getRetentionPolicy,
   setRetentionPolicy,
+  DEFAULT_CONVERSION_SETTINGS,
+  getConversionSettings,
+  setConversionSettings,
   DEFAULT_RETENTION_POLICY,
   getTranscriptionOutputStyle,
   setTranscriptionOutputStyle,
@@ -810,6 +982,7 @@ module.exports = {
   getJobRecord,
   updateJobRecord,
   listJobs,
+  countJobs,
   deleteJobRecord,
   appendJobEvent,
   getJobEvent,

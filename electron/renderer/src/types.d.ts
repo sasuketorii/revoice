@@ -16,6 +16,8 @@ export type JobSummary = {
   pid: number | null;
   error: string | null;
   transcript: string | null;
+  params: Record<string, unknown> | null;
+  metadata: Record<string, unknown> | null;
 };
 
 export type JobEventMessage =
@@ -50,6 +52,7 @@ export type TranscriptionJobPayload = {
   minSegment?: number;
   preset?: string;
   memo?: boolean;
+  sourceConversionJobId?: string;
 };
 
 export type HistoryRecord = {
@@ -79,10 +82,43 @@ export type RetentionPolicy = {
   schedule: RetentionPolicySchedule;
 };
 
+export type ConversionPreset = {
+  format: 'aac' | 'flac' | 'ogg' | 'wav';
+  bitrateKbps: number;
+  sampleRate: number;
+  channels: number;
+};
+
+export type ConversionJobPayload = {
+  inputPath: string;
+  preset?: Partial<ConversionPreset>;
+  outputDir?: string;
+  autoTranscribe?: boolean;
+  tabTitle?: string;
+  presetKey?: string;
+  presetLabel?: string;
+  presetSummary?: string;
+};
+
+export type ConversionSettings = {
+  outputDir: string | null;
+  defaultPreset: ConversionPreset;
+  maxParallelJobs: number;
+  autoCreateTranscribeTab: boolean;
+  ffmpegPath: string | null;
+};
+
 type ListenerDisposer = () => void;
 
 export type RevoiceBridge = {
-  openFileDialog: () => Promise<string | null>;
+  openFileDialog: (
+    options?: {
+      allowMultiple?: boolean;
+      filters?: { name: string; extensions: string[] }[];
+      defaultPath?: string;
+      properties?: string[];
+    }
+  ) => Promise<string | string[] | null>;
   enqueueJob: (payload: TranscriptionJobPayload) => Promise<{ ok: boolean; job?: JobSummary; error?: string }>;
   listJobs: () => Promise<{ ok: boolean; jobs?: JobSummary[]; error?: string }>;
   cancelJob: (jobId: string) => Promise<{ ok: boolean; error?: string }>;
@@ -126,6 +162,22 @@ export type RevoiceBridge = {
     ListenerDisposer | void;
   copyToClipboard: (text: string) => Promise<{ ok: boolean; error?: string }>;
   openExternal: (url: string) => Promise<{ ok: boolean; error?: string }>;
+  enqueueConversion: (
+    payload: ConversionJobPayload | ConversionJobPayload[]
+  ) => Promise<
+    { ok: true; job?: JobSummary; jobs?: JobSummary[] } |
+    { ok: false; error: string }
+  >;
+  listConversionJobs: () => Promise<{ ok: boolean; jobs?: JobSummary[]; error?: string }>;
+  cancelConversionJob: (jobId: string) => Promise<{ ok: boolean; error?: string }>;
+  listConversionHistory: (options?: { limit?: number; offset?: number }) => Promise<
+    { ok: true; jobs: JobSummary[]; limit: number; offset: number; total: number } | { ok: false; error: string }
+  >;
+  linkConversionTranscription: (conversionJobId: string, transcriptionJobId: string) => Promise<{ ok: boolean; error?: string }>;
+  getConversionSettings: () => Promise<{ ok: boolean; settings?: ConversionSettings; error?: string }>;
+  setConversionSettings: (
+    settings: ConversionSettings
+  ) => Promise<{ ok: boolean; settings?: ConversionSettings; error?: string }>;
 };
 
 declare global {
