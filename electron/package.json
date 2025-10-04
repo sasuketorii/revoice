@@ -17,6 +17,8 @@
     "dist": "npm run renderer:build && npm run prep-python && electron-builder"
   },
   "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@ffprobe-installer/ffprobe": "^2.1.2",
     "better-sqlite3": "^9.4.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
@@ -39,8 +41,13 @@
     "files": [
       "main.js",
       "preload.js",
+      "history/**/*",
       "renderer/dist/**/*",
       "renderer/assets/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/@ffmpeg-installer/**",
+      "node_modules/@ffprobe-installer/**"
     ],
     "extraResources": [
       {
@@ -52,7 +59,7 @@
       }
     ],
     "mac": {
-      "icon": "../revoice.icns",
+      "icon": "../revoice-symbol.icns",
       "category": "public.app-category.productivity",
       "target": [
         "dmg",
@@ -60,9 +67,10 @@
       ]
     },
     "dmg": {
-      "icon": "../revoice.icns"
+      "icon": "../revoice-symbol.icns"
     },
     "win": {
+      "icon": "../revoice-symbol.png",
       "target": [
         "nsis",
         "zip"

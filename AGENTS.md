@@ -244,6 +244,7 @@ A. 入力の長さや CPU/GPU 状況によります。`PLAN.md` のプロファ�
 
 ### 15.1 前提
 - FFmpeg 6.x 以上が必要。`ffmpeg -version` で事前確認。環境によっては `settings.conversion.ffmpegPath` を追加する予定。
+- 配布ビルド（macOS）は `@ffmpeg-installer/ffmpeg` / `@ffprobe-installer/ffprobe` を同梱しており、追加設定なしで利用できます。Homebrew などの PATH に頼らず動作するようになっています。
 - 変換後の音声フォーマット（AAC/FLAC/OGG/WAV）はそのまま文字起こしに使用できるよう、faster-whisper CLI 側の拡張子チェックを更新済み／更新予定。
 
 ### 15.2 UI 構成（動画→音声 ページ）

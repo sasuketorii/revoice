@@ -38,13 +38,18 @@ function main() {
     throw new Error('Run this from the cloned repository. pyproject.toml not found.');
   }
 
-  if (!fs.existsSync(venvDir)) fs.mkdirSync(venvDir, { recursive: true });
+  if (fs.existsSync(venvDir)) {
+    fs.rmSync(venvDir, { recursive: true, force: true });
+  }
+
+  fs.mkdirSync(venvDir, { recursive: true });
 
   const sysPython = findSystemPython();
   console.log(`[prep-python] Using system Python: ${sysPython}`);
 
   // Create venv
-  run(sysPython, ['-m', 'venv', venvDir]);
+  const venvArgs = ['-m', 'venv', '--copies', venvDir];
+  run(sysPython, venvArgs);
 
   const py = venvPythonPath(venvDir);
   console.log(`[prep-python] Venv python: ${py}`);
@@ -68,4 +73,3 @@ function main() {
 }
 
 main();
-

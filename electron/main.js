@@ -4,6 +4,8 @@ const fs = require('fs');
 const { spawn, spawnSync } = require('child_process');
 const { randomUUID } = require('crypto');
 const historyStorage = require('./history/storage');
+const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
+const ffprobeInstaller = require('@ffprobe-installer/ffprobe');
 
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 let mainWindow;
@@ -208,9 +210,61 @@ const applyConversionSettings = (next) => {
 const ffmpegBinaryName = () => (process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
 const ffprobeBinaryName = () => (process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
 
+const existsSyncSafe = (targetPath) => {
+  if (!targetPath) return false;
+  try {
+    return fs.existsSync(targetPath);
+  } catch (err) {
+    console.error('existsSync failed', targetPath, err);
+    return false;
+  }
+};
+
+const resolveInstallerBinary = (installerPath) => {
+  if (!installerPath) return null;
+  const resolved = path.resolve(installerPath);
+  if (resolved.includes('app.asar')) {
+    return resolved.replace('app.asar', 'app.asar.unpacked');
+  }
+  return resolved;
+};
+
+const homebrewBinaryCandidates = (binaryName) => {
+  if (process.platform === 'darwin') {
+    return [
+      path.join('/opt/homebrew/bin', binaryName),
+      path.join('/usr/local/bin', binaryName),
+    ];
+  }
+  if (process.platform === 'linux') {
+    return [
+      path.join('/usr/local/bin', binaryName),
+      path.join('/usr/bin', binaryName),
+    ];
+  }
+  if (process.platform === 'win32') {
+    return [
+      path.join('C:\\ffmpeg\\bin', binaryName),
+      path.join('C:\\Program Files\\ffmpeg\\bin', binaryName),
+    ];
+  }
+  return [];
+};
+
+const hasExplicitPathSeparator = (value) => typeof value === 'string' && /[\\/]/.test(value);
+
 const resolveFfmpegBinary = () => {
   if (conversionSettings?.ffmpegPath) {
     return conversionSettings.ffmpegPath;
+  }
+  const bundled = resolveInstallerBinary(ffmpegInstaller?.path);
+  if (existsSyncSafe(bundled)) {
+    return bundled;
+  }
+  for (const candidate of homebrewBinaryCandidates(ffmpegBinaryName())) {
+    if (existsSyncSafe(candidate)) {
+      return candidate;
+    }
   }
   return ffmpegBinaryName();
 };
@@ -218,7 +272,16 @@ const resolveFfmpegBinary = () => {
 const resolveFfprobeBinary = () => {
   if (conversionSettings?.ffmpegPath) {
     const candidate = path.join(path.dirname(conversionSettings.ffmpegPath), ffprobeBinaryName());
-    if (fs.existsSync(candidate)) {
+    if (existsSyncSafe(candidate)) {
+      return candidate;
+    }
+  }
+  const bundled = resolveInstallerBinary(ffprobeInstaller?.path);
+  if (existsSyncSafe(bundled)) {
+    return bundled;
+  }
+  for (const candidate of homebrewBinaryCandidates(ffprobeBinaryName())) {
+    if (existsSyncSafe(candidate)) {
       return candidate;
     }
   }
@@ -261,6 +324,10 @@ const parseProgressSeconds = (value) => {
 };
 
 const probeMediaDuration = (ffprobeBinary, inputPath) => {
+  if (hasExplicitPathSeparator(ffprobeBinary) && !existsSyncSafe(ffprobeBinary)) {
+    console.error('ffprobe not found at path', ffprobeBinary);
+    return null;
+  }
   try {
     const result = spawnSync(ffprobeBinary, [
       '-v',
@@ -279,6 +346,8 @@ const probeMediaDuration = (ffprobeBinary, inputPath) => {
       if (Number.isFinite(parsed) && parsed > 0) {
         return parsed;
       }
+    } else {
+      console.error('ffprobe exited with non-zero status', result.status, result.stderr?.toString?.());
     }
   } catch (err) {
     console.error('ffprobe failed', err);
@@ -1179,6 +1248,17 @@ const startConversionJob = (job) => {
 
   const ffmpegBinary = resolveFfmpegBinary();
   const ffprobeBinary = resolveFfprobeBinary();
+
+  if (hasExplicitPathSeparator(ffmpegBinary) && !existsSyncSafe(ffmpegBinary)) {
+    failConversionJob(job, `FFmpeg の実行ファイルが見つかりません: ${ffmpegBinary}`);
+    return;
+  }
+
+  if (hasExplicitPathSeparator(ffprobeBinary) && !existsSyncSafe(ffprobeBinary)) {
+    failConversionJob(job, `FFprobe の実行ファイルが見つかりません: ${ffprobeBinary}`);
+    return;
+  }
+
   const durationSec = probeMediaDuration(ffprobeBinary, job.inputPath);
   const paths = deriveConversionOutputPaths(job.id, job.inputPath, preset, outputDir);
 
